@@ -246,12 +246,16 @@ export class HTTPClient {
         headers.Authorization = `Bearer ${token}`;
       }
 
-      const response = await this.fetchImpl(this.baseUrl + path, {
+      const request: RequestInit = {
         method,
         headers,
-        body: payload,
         signal: abort.signal
-      });
+      };
+      if (payload !== undefined) {
+        request.body = payload;
+      }
+
+      const response = await this.fetchImpl(this.baseUrl + path, request);
       const text = await response.text();
       if (!statuses.includes(response.status)) {
         throw new ProtocolError(`unexpected HTTP status ${response.status}: ${text.trim()}`);

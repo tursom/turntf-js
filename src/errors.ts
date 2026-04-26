@@ -48,7 +48,7 @@ export class ProtocolError extends TurntfError {
 
 export class ConnectionError extends TurntfError {
   readonly op: string;
-  readonly cause?: unknown;
+  override readonly cause?: unknown;
 
   constructor(op: string, cause: unknown) {
     super(`turntf connection error during ${op}: ${cause instanceof Error ? cause.message : String(cause)}`);
