@@ -300,6 +300,10 @@ export interface LoginRequest {
      * @generated from protobuf field: repeated notifier.client.v1.MessageCursor seen_messages = 4
      */
     seenMessages: MessageCursor[];
+    /**
+     * @generated from protobuf field: bool transient_only = 5
+     */
+    transientOnly: boolean;
 }
 /**
  * @generated from protobuf message notifier.client.v1.LoginResponse
@@ -1946,13 +1950,15 @@ class LoginRequest$Type extends MessageType<LoginRequest> {
         super("notifier.client.v1.LoginRequest", [
             { no: 1, name: "user", kind: "message", T: () => UserRef },
             { no: 3, name: "password", kind: "scalar", T: 9 /*ScalarType.STRING*/ },
-            { no: 4, name: "seen_messages", kind: "message", repeat: 2 /*RepeatType.UNPACKED*/, T: () => MessageCursor }
+            { no: 4, name: "seen_messages", kind: "message", repeat: 2 /*RepeatType.UNPACKED*/, T: () => MessageCursor },
+            { no: 5, name: "transient_only", kind: "scalar", T: 8 /*ScalarType.BOOL*/ }
         ]);
     }
     create(value?: PartialMessage<LoginRequest>): LoginRequest {
         const message = globalThis.Object.create((this.messagePrototype!));
         message.password = "";
         message.seenMessages = [];
+        message.transientOnly = false;
         if (value !== undefined)
             reflectionMergePartial<LoginRequest>(this, message, value);
         return message;
@@ -1970,6 +1976,9 @@ class LoginRequest$Type extends MessageType<LoginRequest> {
                     break;
                 case /* repeated notifier.client.v1.MessageCursor seen_messages */ 4:
                     message.seenMessages.push(MessageCursor.internalBinaryRead(reader, reader.uint32(), options));
+                    break;
+                case /* bool transient_only */ 5:
+                    message.transientOnly = reader.bool();
                     break;
                 default:
                     let u = options.readUnknownField;
@@ -1992,6 +2001,9 @@ class LoginRequest$Type extends MessageType<LoginRequest> {
         /* repeated notifier.client.v1.MessageCursor seen_messages = 4; */
         for (let i = 0; i < message.seenMessages.length; i++)
             MessageCursor.internalBinaryWrite(message.seenMessages[i], writer.tag(4, WireType.LengthDelimited).fork(), options).join();
+        /* bool transient_only = 5; */
+        if (message.transientOnly !== false)
+            writer.tag(5, WireType.Varint).bool(message.transientOnly);
         let u = options.writeUnknownFields;
         if (u !== false)
             (u == true ? UnknownFieldHandler.onWrite : u)(this.typeName, message, writer);
