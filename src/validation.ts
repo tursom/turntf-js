@@ -1,4 +1,4 @@
-import { DeliveryMode, type Message, type MessageCursor, type UserRef } from "./types";
+import { DeliveryMode, type Message, type MessageCursor, type SessionRef, type UserRef } from "./types";
 
 const unsignedDecimalPattern = /^(0|[1-9][0-9]*)$/;
 
@@ -18,6 +18,13 @@ export function assertRequiredDecimalString(value: string, field: string): void 
 export function validateUserRef(ref: UserRef, field = "user"): void {
   assertRequiredDecimalString(ref.nodeId, `${field}.nodeId`);
   assertRequiredDecimalString(ref.userId, `${field}.userId`);
+}
+
+export function validateSessionRef(ref: SessionRef, field = "session"): void {
+  assertRequiredDecimalString(ref.servingNodeId, `${field}.servingNodeId`);
+  if (ref.sessionId === "") {
+    throw new Error(`${field}.sessionId is required`);
+  }
 }
 
 export function validateDeliveryMode(mode: DeliveryMode): void {

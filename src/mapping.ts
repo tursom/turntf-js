@@ -7,11 +7,15 @@ import {
   type LoggedInUser as ProtoLoggedInUser,
   type Message as ProtoMessage,
   type MessageCursor as ProtoMessageCursor,
+  type OnlineNodePresence as ProtoOnlineNodePresence,
   type OperationsStatus as ProtoOperationsStatus,
   type Packet as ProtoPacket,
   type PeerOriginStatus as ProtoPeerOriginStatus,
   type PeerStatus as ProtoPeerStatus,
   type ProjectionStatus as ProtoProjectionStatus,
+  type ResolveUserSessionsResponse as ProtoResolveUserSessionsResponse,
+  type ResolvedSession as ProtoResolvedSession,
+  type SessionRef as ProtoSessionRef,
   type TransientAccepted as ProtoTransientAccepted,
   type User as ProtoUser,
   type UserRef as ProtoUserRef
@@ -28,12 +32,16 @@ import {
   type Message,
   type MessageCursor,
   type MessageTrimStatus,
+  type OnlineNodePresence,
   type OperationsStatus,
   type Packet,
   type PeerOriginStatus,
   type PeerStatus,
   type ProjectionStatus,
+  type ResolveUserSessionsResult,
   type RelayAccepted,
+  type ResolvedSession,
+  type SessionRef,
   type Subscription,
   type User,
   type UserRef
@@ -46,6 +54,10 @@ export function userRefToProto(ref: UserRef): ProtoUserRef {
   return { nodeId: ref.nodeId, userId: ref.userId };
 }
 
+export function sessionRefToProto(ref: SessionRef): ProtoSessionRef {
+  return { servingNodeId: ref.servingNodeId, sessionId: ref.sessionId };
+}
+
 export function cursorToProto(cursor: MessageCursor): ProtoMessageCursor {
   return { nodeId: cursor.nodeId, seq: cursor.seq };
 }
@@ -56,6 +68,20 @@ export function cursorFromProto(cursor: ProtoMessageCursor | undefined): Message
 
 export function userRefFromProto(ref: ProtoUserRef | undefined): UserRef {
   return ref == null ? { ...zeroUserRef } : { nodeId: ref.nodeId, userId: ref.userId };
+}
+
+export function sessionRefFromProto(ref: ProtoSessionRef | undefined): SessionRef {
+  if (ref == null) {
+    throw new ProtocolError("missing session_ref");
+  }
+  return { servingNodeId: ref.servingNodeId, sessionId: ref.sessionId };
+}
+
+export function optionalSessionRefFromProto(ref: ProtoSessionRef | undefined): SessionRef | undefined {
+  if (ref == null) {
+    return undefined;
+  }
+  return { servingNodeId: ref.servingNodeId, sessionId: ref.sessionId };
 }
 
 export function userFromProto(user: ProtoUser | undefined): User {
@@ -93,7 +119,7 @@ export function packetFromProto(packet: ProtoPacket | undefined): Packet {
   if (packet == null) {
     throw new ProtocolError("missing packet");
   }
-  return {
+  const mapped: Packet = {
     packetId: packet.packetId,
     sourceNodeId: packet.sourceNodeId,
     targetNodeId: packet.targetNodeId,
@@ -102,19 +128,29 @@ export function packetFromProto(packet: ProtoPacket | undefined): Packet {
     body: cloneBytes(packet.body),
     deliveryMode: deliveryModeFromProto(packet.deliveryMode)
   };
+  const targetSession = optionalSessionRefFromProto(packet.targetSession);
+  if (targetSession != null) {
+    mapped.targetSession = targetSession;
+  }
+  return mapped;
 }
 
 export function relayAcceptedFromProto(accepted: ProtoTransientAccepted | undefined): RelayAccepted {
   if (accepted == null) {
     throw new ProtocolError("missing transient_accepted");
   }
-  return {
+  const mapped: RelayAccepted = {
     packetId: accepted.packetId,
     sourceNodeId: accepted.sourceNodeId,
     targetNodeId: accepted.targetNodeId,
     recipient: userRefFromProto(accepted.recipient),
     deliveryMode: deliveryModeFromProto(accepted.deliveryMode)
   };
+  const targetSession = optionalSessionRefFromProto(accepted.targetSession);
+  if (targetSession != null) {
+    mapped.targetSession = targetSession;
+  }
+  return mapped;
 }
 
 function attachmentTypeFromProto(type: ProtoAttachmentType): AttachmentType {
@@ -224,6 +260,41 @@ export function loggedInUserFromProto(user: ProtoLoggedInUser | undefined): Logg
   };
 }
 
+export function onlineNodePresenceFromProto(item: ProtoOnlineNodePresence | undefined): OnlineNodePresence {
+  if (item == null) {
+    throw new ProtocolError("missing online node presence");
+  }
+  return {
+    servingNodeId: item.servingNodeId,
+    sessionCount: item.sessionCount,
+    transportHint: item.transportHint
+  };
+}
+
+export function resolvedSessionFromProto(item: ProtoResolvedSession | undefined): ResolvedSession {
+  if (item == null) {
+    throw new ProtocolError("missing resolved session");
+  }
+  return {
+    session: sessionRefFromProto(item.session),
+    transport: item.transport,
+    transientCapable: item.transientCapable
+  };
+}
+
+export function resolveUserSessionsFromProto(
+  response: ProtoResolveUserSessionsResponse | undefined
+): ResolveUserSessionsResult {
+  if (response == null) {
+    throw new ProtocolError("missing resolve_user_sessions_response");
+  }
+  return {
+    user: userRefFromProto(response.user),
+    presence: response.presence.map(onlineNodePresenceFromProto),
+    sessions: response.items.map(resolvedSessionFromProto)
+  };
+}
+
 export function operationsStatusFromProto(status: ProtoOperationsStatus | undefined): OperationsStatus {
   if (status == null) {
     throw new ProtocolError("missing operations status");
@@ -319,6 +390,14 @@ export function clusterNodesFromProto(items: ProtoClusterNode[]): ClusterNode[] 
 
 export function loggedInUsersFromProto(items: ProtoLoggedInUser[]): LoggedInUser[] {
   return items.map(loggedInUserFromProto);
+}
+
+export function onlineNodePresencesFromProto(items: ProtoOnlineNodePresence[]): OnlineNodePresence[] {
+  return items.map(onlineNodePresenceFromProto);
+}
+
+export function resolvedSessionsFromProto(items: ProtoResolvedSession[]): ResolvedSession[] {
+  return items.map(resolvedSessionFromProto);
 }
 
 export function deliveryModeToProto(mode: DeliveryMode): ClientDeliveryMode {

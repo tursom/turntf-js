@@ -65,11 +65,13 @@ describe("Client", () => {
               updatedAt: "",
               originNodeId: "4096"
             },
-            protocolVersion: "client-v1alpha1"
+            protocolVersion: "client-v1alpha1",
+            sessionRef: sessionRefRecord("session-alice")
           }
         }
       });
       await connectPromise;
+      expect(client.sessionRef).toEqual({ servingNodeId: "4096", sessionId: "session-alice" });
 
       await conn.sendServerEnvelope({
         body: {
@@ -136,6 +138,7 @@ describe("Client", () => {
 
       expect(handler.logins).toHaveLength(1);
       expect(handler.logins[0]?.protocolVersion).toBe("client-v1alpha1");
+      expect(handler.logins[0]?.sessionRef).toEqual({ servingNodeId: "4096", sessionId: "session-alice" });
       expect(handler.messages).toHaveLength(2);
       expect(handler.messages[0]?.seq).toBe("7");
       expect(handler.messages[1]?.seq).toBe("8");
@@ -642,6 +645,137 @@ describe("Client", () => {
     }
   });
 
+  it("resolves sessions and targets transient packets to a specific session", async () => {
+    const server = await TestServer.start();
+    const handler = new RecordingHandler();
+    const client = new Client({
+      baseUrl: server.baseUrl(),
+      credentials: {
+        nodeId: "4096",
+        userId: "1025",
+        password: plainPasswordSync("alice-password")
+      },
+      handler,
+      requestTimeoutMs: 200,
+      pingIntervalMs: 60_000
+    });
+
+    const target: UserRef = { nodeId: "8192", userId: "1025" };
+
+    try {
+      const connectPromise = client.connect();
+      const conn = await server.nextConnection();
+      await conn.readClientEnvelope();
+      await conn.sendServerEnvelope(loginResponseEnvelope("session-alice"));
+      await connectPromise;
+
+      expect(client.sessionRef).toEqual({ servingNodeId: "4096", sessionId: "session-alice" });
+      expect(handler.logins[0]?.sessionRef).toEqual({ servingNodeId: "4096", sessionId: "session-alice" });
+
+      const resolvePromise = client.resolveUserSessions(target);
+      const resolveReq = await conn.readClientEnvelope();
+      const resolveBody = clientBody(resolveReq, "resolveUserSessions");
+      expect(resolveBody.resolveUserSessions.user).toEqual(target);
+
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "resolveUserSessionsResponse",
+          resolveUserSessionsResponse: {
+            requestId: resolveBody.resolveUserSessions.requestId,
+            user: target,
+            presence: [
+              { servingNodeId: "8192", sessionCount: 2, transportHint: "ws" }
+            ],
+            items: [
+              {
+                session: sessionRefRecord("session-target-1", "8192"),
+                transport: "ws",
+                transientCapable: true
+              }
+            ],
+            count: 1
+          }
+        }
+      });
+
+      const resolved = await resolvePromise;
+      expect(resolved.user).toEqual(target);
+      expect(resolved.presence).toEqual([
+        { servingNodeId: "8192", sessionCount: 2, transportHint: "ws" }
+      ]);
+      expect(resolved.sessions).toEqual([
+        {
+          session: { servingNodeId: "8192", sessionId: "session-target-1" },
+          transport: "ws",
+          transientCapable: true
+        }
+      ]);
+
+      const sendPromise = client.sendPacket(
+        target,
+        Buffer.from("payload"),
+        DeliveryMode.RouteRetry,
+        { targetSession: resolved.sessions[0]!.session }
+      );
+      const sendReq = await conn.readClientEnvelope();
+      const sendBody = clientBody(sendReq, "sendMessage");
+      expect(sendBody.sendMessage.targetSession).toEqual(sessionRefRecord("session-target-1", "8192"));
+
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "sendMessageResponse",
+          sendMessageResponse: {
+            requestId: sendBody.sendMessage.requestId,
+            body: {
+              oneofKind: "transientAccepted",
+              transientAccepted: {
+                packetId: "77",
+                sourceNodeId: "4096",
+                targetNodeId: "8192",
+                recipient: target,
+                deliveryMode: proto.ClientDeliveryMode.ROUTE_RETRY,
+                targetSession: sessionRefRecord("session-target-1", "8192")
+              }
+            }
+          }
+        }
+      });
+
+      const accepted = await sendPromise;
+      expect(accepted.targetSession).toEqual({
+        servingNodeId: "8192",
+        sessionId: "session-target-1"
+      });
+
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "packetPushed",
+          packetPushed: {
+            packet: {
+              packetId: "78",
+              sourceNodeId: "8192",
+              targetNodeId: "4096",
+              recipient: { nodeId: "4096", userId: "1025" },
+              sender: target,
+              body: Buffer.from("reply"),
+              deliveryMode: proto.ClientDeliveryMode.BEST_EFFORT,
+              targetSession: sessionRefRecord("session-alice")
+            }
+          }
+        }
+      });
+
+      await withTimeout(waitFor(() => handler.packets.length === 1), "targeted packet");
+      expect(handler.packets[0]?.targetSession).toEqual({
+        servingNodeId: "4096",
+        sessionId: "session-alice"
+      });
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("routes request-scoped server errors by request_id even when responses arrive out of order", async () => {
     const server = await TestServer.start();
     const client = new Client({
@@ -997,16 +1131,21 @@ class TestConnection {
   }
 }
 
-function loginResponseEnvelope(): proto.ServerEnvelope {
+function loginResponseEnvelope(sessionId = "session-alice"): proto.ServerEnvelope {
   return {
     body: {
       oneofKind: "loginResponse",
       loginResponse: {
         user: userRecord("alice"),
-        protocolVersion: "client-v1alpha1"
+        protocolVersion: "client-v1alpha1",
+        sessionRef: sessionRefRecord(sessionId)
       }
     }
   };
+}
+
+function sessionRefRecord(sessionId: string, servingNodeId = "4096"): proto.SessionRef {
+  return { servingNodeId, sessionId };
 }
 
 function clientBody<K extends proto.ClientEnvelope["body"]["oneofKind"]>(
@@ -1101,4 +1240,14 @@ function withTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 1_000): 
       setTimeout(() => reject(new Error(`${label} timed out`)), timeoutMs);
     })
   ]);
+}
+
+async function waitFor(predicate: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate()) {
+    if (Date.now() >= deadline) {
+      throw new Error("condition not met");
+    }
+    await delay(10);
+  }
 }

@@ -67,6 +67,7 @@ await client.listMessages(token, target, 20);
 ```ts
 import {
   Client,
+  DeliveryMode,
   MemoryCursorStore,
   NopHandler,
   plainPasswordSync,
@@ -76,7 +77,7 @@ import {
 
 class Handler extends NopHandler {
   override onLogin(info: LoginInfo): void {
-    console.log("login ok", info.user.userId, info.protocolVersion);
+    console.log("login ok", info.user.userId, info.protocolVersion, info.sessionRef.sessionId);
   }
 
   override onMessage(message: Message): void {
@@ -103,11 +104,33 @@ await client.sendMessage(
 await client.close();
 ```
 
+连接成功后，SDK 会同时暴露当前登录会话：
+
+- `handler.onLogin(info)` 里的 `info.sessionRef`
+- `client.sessionRef`
+
+如果你要做会话定向的瞬时点对点发送，可以先解析目标用户当前在线会话，再把选中的 `targetSession` 传给 `sendPacket()`：
+
+```ts
+const target = { nodeId: "8192", userId: "1025" };
+const resolved = await client.resolveUserSessions(target);
+const session = resolved.sessions.find((item) => item.transientCapable)?.session;
+
+if (session) {
+  await client.sendPacket(
+    target,
+    Buffer.from("hello from one session to another"),
+    DeliveryMode.RouteRetry,
+    { targetSession: session }
+  );
+}
+```
+
 `Client` 公开的方法包括：
 
 - 连接与基础能力：`connect()`、`close()`、`ping()`
-- 实时发送：`sendMessage()` / `postMessage()`、`sendPacket()` / `postPacket()`
-- WS RPC：`createUser()`、`getUser()`、`updateUser()`、`deleteUser()`、`subscribeChannel()`、`listMessages()`、`listEvents()`、`listClusterNodes()`、`metrics()` 等
+- 实时发送：`sendMessage()` / `postMessage()`、`sendPacket()` / `postPacket()`；其中 `sendPacket()` 支持 `options.targetSession`
+- WS RPC：`createUser()`、`getUser()`、`updateUser()`、`deleteUser()`、`subscribeChannel()`、`listMessages()`、`listEvents()`、`listClusterNodes()`、`listNodeLoggedInUsers()`、`resolveUserSessions()`、`metrics()` 等
 - HTTP 直通：`client.http`
 
 ## CursorStore

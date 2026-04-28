@@ -42,7 +42,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "gen:proto": "protoc -I proto --ts_out src/generated --ts_opt long_type_string proto/client.proto",
+    "gen:proto": "protoc -I proto --ts_out src/generated --ts_opt long_type_string proto/client.proto && node scripts/postprocess-generated.mjs",
     "typecheck": "tsc --noEmit",
     "build": "tsup",
     "test": "vitest run",

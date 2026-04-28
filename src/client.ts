@@ -31,6 +31,9 @@ import {
   operationsStatusFromProto,
   packetFromProto,
   relayAcceptedFromProto,
+  resolveUserSessionsFromProto,
+  sessionRefFromProto,
+  sessionRefToProto,
   subscriptionFromProto,
   subscriptionsFromProto,
   userFromProto,
@@ -54,8 +57,11 @@ import type {
   MessageCursor,
   OperationsStatus,
   Packet,
+  ResolveUserSessionsResult,
   RelayAccepted,
   RequestOptions,
+  SendPacketOptions,
+  SessionRef,
   Subscription,
   UpdateUserRequest,
   User,
@@ -67,6 +73,7 @@ import {
   toRequiredWireInteger,
   toWireInteger,
   validateDeliveryMode,
+  validateSessionRef,
   validateUserRef
 } from "./validation";
 
@@ -137,6 +144,7 @@ export class Client {
   private pingTask: Promise<void> | undefined;
   private runTask: Promise<void> | undefined;
   private connectWaiter: Deferred<void> | undefined;
+  private currentSessionRef: SessionRef | undefined;
   private connected = false;
   private closed = false;
   private stopReconnect = false;
@@ -171,6 +179,13 @@ export class Client {
 
   get baseUrl(): string {
     return this.http.baseUrl;
+  }
+
+  get sessionRef(): SessionRef | undefined {
+    if (this.currentSessionRef == null) {
+      return undefined;
+    }
+    return { ...this.currentSessionRef };
   }
 
   async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string> {
@@ -221,6 +236,7 @@ export class Client {
     const connectingSocket = this.connectingSocket;
     this.socket = undefined;
     this.connectingSocket = undefined;
+    this.currentSessionRef = undefined;
     this.connected = false;
 
     if (socket != null) {
@@ -280,28 +296,39 @@ export class Client {
     target: UserRef,
     body: Uint8Array,
     deliveryMode: DeliveryMode,
-    options?: RequestOptions
+    options?: SendPacketOptions
   ): Promise<RelayAccepted> {
     validateUserRef(target, "target");
     if (body.length === 0) {
       throw new Error("body is required");
     }
     validateDeliveryMode(deliveryMode);
+    if (options?.targetSession != null) {
+      validateSessionRef(options.targetSession, "options.targetSession");
+    }
 
     const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "sendMessage",
-          sendMessage: {
-            requestId,
-            target: userRefToProto(target),
-            body: new Uint8Array(body),
-            deliveryKind: ClientDeliveryKind.TRANSIENT,
-            deliveryMode: deliveryModeToProto(deliveryMode),
-            syncMode: ClientMessageSyncMode.UNSPECIFIED
-          }
+      (requestId) => {
+        const sendMessage = {
+          requestId,
+          target: userRefToProto(target),
+          body: new Uint8Array(body),
+          deliveryKind: ClientDeliveryKind.TRANSIENT,
+          deliveryMode: deliveryModeToProto(deliveryMode),
+          syncMode: ClientMessageSyncMode.UNSPECIFIED
+        };
+        if (options?.targetSession != null) {
+          Object.assign(sendMessage, {
+            targetSession: sessionRefToProto(options.targetSession)
+          });
         }
-      }),
+        return {
+          body: {
+            oneofKind: "sendMessage",
+            sendMessage
+          }
+        };
+      },
       options
     );
     if (!isRelayAccepted(result)) {
@@ -314,7 +341,7 @@ export class Client {
     target: UserRef,
     body: Uint8Array,
     deliveryMode: DeliveryMode,
-    options?: RequestOptions
+    options?: SendPacketOptions
   ): Promise<RelayAccepted> {
     return this.sendPacket(target, body, deliveryMode, options);
   }
@@ -645,6 +672,27 @@ export class Client {
     return result;
   }
 
+  async resolveUserSessions(user: UserRef, options?: RequestOptions): Promise<ResolveUserSessionsResult> {
+    validateUserRef(user, "user");
+
+    const result = await this.rpc(
+      (requestId) => ({
+        body: {
+          oneofKind: "resolveUserSessions",
+          resolveUserSessions: {
+            requestId,
+            user: userRefToProto(user)
+          }
+        }
+      }),
+      options
+    );
+    if (!isResolveUserSessionsResult(result)) {
+      throw new ProtocolError("missing resolve_user_sessions_response");
+    }
+    return result;
+  }
+
   async operationsStatus(options?: RequestOptions): Promise<OperationsStatus> {
     const result = await this.rpc(
       (requestId) => ({
@@ -786,6 +834,7 @@ export class Client {
       this.stopReconnect = false;
       this.connectingSocket = undefined;
       this.socket = socket;
+      this.currentSessionRef = { ...loginInfo.sessionRef };
       this.connected = true;
       connected = true;
 
@@ -795,6 +844,7 @@ export class Client {
       this.pingTask = this.pingLoop(pingAbort.signal);
       const readError = await this.readLoop(socket);
       this.connected = false;
+      this.currentSessionRef = undefined;
       if (this.socket === socket) {
         this.socket = undefined;
       }
@@ -804,6 +854,7 @@ export class Client {
       return { connected, error: readError };
     } catch (error) {
       this.connected = false;
+      this.currentSessionRef = undefined;
       if (this.connectingSocket === socket) {
         this.connectingSocket = undefined;
       }
@@ -852,7 +903,8 @@ export class Client {
       case "loginResponse":
         return {
           user: userFromProto(env.body.loginResponse.user),
-          protocolVersion: env.body.loginResponse.protocolVersion
+          protocolVersion: env.body.loginResponse.protocolVersion,
+          sessionRef: sessionRefFromProto(env.body.loginResponse.sessionRef)
         };
       case "error": {
         this.stopReconnect = env.body.error.code === "unauthorized";
@@ -947,6 +999,12 @@ export class Client {
         this.resolvePending(
           env.body.listNodeLoggedInUsersResponse.requestId,
           loggedInUsersFromProto(env.body.listNodeLoggedInUsersResponse.items)
+        );
+        return;
+      case "resolveUserSessionsResponse":
+        this.resolvePending(
+          env.body.resolveUserSessionsResponse.requestId,
+          resolveUserSessionsFromProto(env.body.resolveUserSessionsResponse)
         );
         return;
       case "operationsStatusResponse":
@@ -1409,6 +1467,10 @@ function isSubscription(value: unknown): value is Subscription {
 
 function isBlacklistEntry(value: unknown): value is BlacklistEntry {
   return value != null && typeof value === "object" && "owner" in value && "blocked" in value;
+}
+
+function isResolveUserSessionsResult(value: unknown): value is ResolveUserSessionsResult {
+  return value != null && typeof value === "object" && "user" in value && "presence" in value && "sessions" in value;
 }
 
 function isOperationsStatus(value: unknown): value is OperationsStatus {

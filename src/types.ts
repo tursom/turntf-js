@@ -19,6 +19,11 @@ export interface UserRef {
   userId: string;
 }
 
+export interface SessionRef {
+  servingNodeId: string;
+  sessionId: string;
+}
+
 export interface MessageCursor {
   nodeId: string;
   seq: string;
@@ -53,6 +58,7 @@ export interface Packet {
   sender: UserRef;
   body: Uint8Array;
   deliveryMode: DeliveryMode;
+  targetSession?: SessionRef;
 }
 
 export interface RelayAccepted {
@@ -61,6 +67,7 @@ export interface RelayAccepted {
   targetNodeId: string;
   recipient: UserRef;
   deliveryMode: DeliveryMode;
+  targetSession?: SessionRef;
 }
 
 export const AttachmentType = {
@@ -121,6 +128,24 @@ export interface LoggedInUser {
   nodeId: string;
   userId: string;
   username: string;
+}
+
+export interface OnlineNodePresence {
+  servingNodeId: string;
+  sessionCount: number;
+  transportHint: string;
+}
+
+export interface ResolvedSession {
+  session: SessionRef;
+  transport: string;
+  transientCapable: boolean;
+}
+
+export interface ResolveUserSessionsResult {
+  user: UserRef;
+  presence: OnlineNodePresence[];
+  sessions: ResolvedSession[];
 }
 
 export interface MessageTrimStatus {
@@ -187,6 +212,7 @@ export interface DeleteUserResult {
 export interface LoginInfo {
   user: User;
   protocolVersion: string;
+  sessionRef: SessionRef;
 }
 
 export interface SendMessageInput {
@@ -198,6 +224,7 @@ export interface SendPacketInput {
   target: UserRef;
   body: Uint8Array;
   deliveryMode: DeliveryMode;
+  targetSession?: SessionRef;
 }
 
 export interface CreateUserRequest {
@@ -217,4 +244,8 @@ export interface UpdateUserRequest {
 export interface RequestOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+}
+
+export interface SendPacketOptions extends RequestOptions {
+  targetSession?: SessionRef;
 }
