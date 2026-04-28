@@ -26,6 +26,7 @@ export class DisconnectedError extends TurntfError {
 export class ServerError extends TurntfError {
   readonly code: string;
   readonly requestId: string;
+  readonly serverMessage: string;
 
   constructor(code: string, message: string, requestId = "0") {
     super(requestId === "0"
@@ -33,6 +34,7 @@ export class ServerError extends TurntfError {
       : `turntf server error: ${code} (${message}), request_id=${requestId}`);
     this.code = code;
     this.requestId = requestId;
+    this.serverMessage = message;
   }
 
   unauthorized(): boolean {
@@ -41,8 +43,11 @@ export class ServerError extends TurntfError {
 }
 
 export class ProtocolError extends TurntfError {
+  readonly protocolMessage: string;
+
   constructor(message: string) {
     super(`turntf protocol error: ${message}`);
+    this.protocolMessage = message;
   }
 }
 

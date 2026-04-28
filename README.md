@@ -1,7 +1,8 @@
 # turntf-js
 
-`turntf-js` 是 turntf 的 Node.js SDK，当前提供：
+`turntf-js` 是 turntf 的 Node.js SDK，提供两类客户端能力：
 
+- WebSocket + Protobuf 长连接客户端
 - HTTP JSON 管理与查询客户端
 - 密码处理辅助方法
 - 类型安全的 turntf 数据模型
@@ -25,6 +26,8 @@ npm install @tursom/turntf-js
 ```
 
 ## 快速开始
+
+### `HTTPClient`
 
 ```ts
 import {
@@ -53,6 +56,80 @@ const user = await client.createUser(token, request);
 const target: UserRef = { nodeId: user.nodeId, userId: user.userId };
 await client.listMessages(token, target, 20);
 ```
+
+### `Client`
+
+`Client` 是新的 WS-first 高级入口：
+
+- HTTP 登录仍走 `client.login()` / `client.loginWithPassword()` 或 `client.http`
+- 长连接登录、消息推送、自动 ack、自动重连、WS RPC 全部由 `Client` 负责
+
+```ts
+import {
+  Client,
+  MemoryCursorStore,
+  NopHandler,
+  plainPasswordSync,
+  type LoginInfo,
+  type Message
+} from "@tursom/turntf-js";
+
+class Handler extends NopHandler {
+  override onLogin(info: LoginInfo): void {
+    console.log("login ok", info.user.userId, info.protocolVersion);
+  }
+
+  override onMessage(message: Message): void {
+    console.log("message", message.seq, Buffer.from(message.body).toString("utf8"));
+  }
+}
+
+const client = new Client({
+  baseUrl: "http://127.0.0.1:8080",
+  credentials: {
+    nodeId: "4096",
+    userId: "1025",
+    password: plainPasswordSync("alice-password")
+  },
+  cursorStore: new MemoryCursorStore(),
+  handler: new Handler()
+});
+
+await client.connect();
+await client.sendMessage(
+  { nodeId: "4096", userId: "1025" },
+  Buffer.from("hello")
+);
+await client.close();
+```
+
+`Client` 公开的方法包括：
+
+- 连接与基础能力：`connect()`、`close()`、`ping()`
+- 实时发送：`sendMessage()` / `postMessage()`、`sendPacket()` / `postPacket()`
+- WS RPC：`createUser()`、`getUser()`、`updateUser()`、`deleteUser()`、`subscribeChannel()`、`listMessages()`、`listEvents()`、`listClusterNodes()`、`metrics()` 等
+- HTTP 直通：`client.http`
+
+## CursorStore
+
+`CursorStore` 是 SDK 与业务侧消息持久化之间的接缝：
+
+```ts
+interface CursorStore {
+  loadSeenMessages(): Promise<MessageCursor[]> | MessageCursor[];
+  saveMessage(message: Message): Promise<void> | void;
+  saveCursor(cursor: MessageCursor): Promise<void> | void;
+}
+```
+
+`MessagePushed` 和持久化的 `SendMessageResponse.message` 到达后，SDK 会按固定顺序执行：
+
+1. `saveMessage`
+2. `saveCursor`
+3. 发送 `AckMessage`
+4. 调用 `handler.onMessage`
+
+如果只是本地测试，可以直接使用 `MemoryCursorStore`。
 
 如果你需要直接使用生成的 protobuf 类型，可以从 `proto` 命名空间访问：
 
