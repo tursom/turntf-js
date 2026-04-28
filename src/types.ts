@@ -63,6 +63,25 @@ export interface RelayAccepted {
   deliveryMode: DeliveryMode;
 }
 
+export const AttachmentType = {
+  ChannelManager: "channel_manager",
+  ChannelWriter: "channel_writer",
+  ChannelSubscription: "channel_subscription",
+  UserBlacklist: "user_blacklist"
+} as const;
+
+export type AttachmentType = (typeof AttachmentType)[keyof typeof AttachmentType];
+
+export interface Attachment {
+  owner: UserRef;
+  subject: UserRef;
+  attachmentType: AttachmentType;
+  configJson: Uint8Array;
+  attachedAt: string;
+  deletedAt: string;
+  originNodeId: string;
+}
+
 export interface Subscription {
   subscriber: UserRef;
   channel: UserRef;

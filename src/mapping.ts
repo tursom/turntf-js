@@ -1,6 +1,7 @@
 import {
+  AttachmentType as ProtoAttachmentType,
+  type Attachment as ProtoAttachment,
   ClientDeliveryMode,
-  type BlacklistEntry as ProtoBlacklistEntry,
   type ClusterNode as ProtoClusterNode,
   type Event as ProtoEvent,
   type LoggedInUser as ProtoLoggedInUser,
@@ -11,13 +12,14 @@ import {
   type PeerOriginStatus as ProtoPeerOriginStatus,
   type PeerStatus as ProtoPeerStatus,
   type ProjectionStatus as ProtoProjectionStatus,
-  type Subscription as ProtoSubscription,
   type TransientAccepted as ProtoTransientAccepted,
   type User as ProtoUser,
   type UserRef as ProtoUserRef
 } from "./generated/client";
 import { ProtocolError } from "./errors";
 import {
+  AttachmentType,
+  type Attachment,
   DeliveryMode,
   type BlacklistEntry,
   type ClusterNode,
@@ -115,29 +117,70 @@ export function relayAcceptedFromProto(accepted: ProtoTransientAccepted | undefi
   };
 }
 
-export function subscriptionFromProto(subscription: ProtoSubscription | undefined): Subscription {
-  if (subscription == null) {
-    throw new ProtocolError("missing subscription");
+function attachmentTypeFromProto(type: ProtoAttachmentType): AttachmentType {
+  switch (type) {
+    case ProtoAttachmentType.CHANNEL_MANAGER:
+      return AttachmentType.ChannelManager;
+    case ProtoAttachmentType.CHANNEL_WRITER:
+      return AttachmentType.ChannelWriter;
+    case ProtoAttachmentType.CHANNEL_SUBSCRIPTION:
+      return AttachmentType.ChannelSubscription;
+    case ProtoAttachmentType.USER_BLACKLIST:
+      return AttachmentType.UserBlacklist;
+    default:
+      throw new ProtocolError(`unsupported attachment type ${ProtoAttachmentType[type] ?? type}`);
+  }
+}
+
+export function attachmentTypeToProto(type: AttachmentType): ProtoAttachmentType {
+  switch (type) {
+    case AttachmentType.ChannelManager:
+      return ProtoAttachmentType.CHANNEL_MANAGER;
+    case AttachmentType.ChannelWriter:
+      return ProtoAttachmentType.CHANNEL_WRITER;
+    case AttachmentType.ChannelSubscription:
+      return ProtoAttachmentType.CHANNEL_SUBSCRIPTION;
+    case AttachmentType.UserBlacklist:
+      return ProtoAttachmentType.USER_BLACKLIST;
+    default:
+      return ProtoAttachmentType.UNSPECIFIED;
+  }
+}
+
+export function attachmentFromProto(attachment: ProtoAttachment | undefined): Attachment {
+  if (attachment == null) {
+    throw new ProtocolError("missing attachment");
   }
   return {
-    subscriber: userRefFromProto(subscription.subscriber),
-    channel: userRefFromProto(subscription.channel),
-    subscribedAt: subscription.subscribedAt,
-    deletedAt: subscription.deletedAt,
-    originNodeId: subscription.originNodeId
+    owner: userRefFromProto(attachment.owner),
+    subject: userRefFromProto(attachment.subject),
+    attachmentType: attachmentTypeFromProto(attachment.attachmentType),
+    configJson: cloneBytes(attachment.configJson),
+    attachedAt: attachment.attachedAt,
+    deletedAt: attachment.deletedAt,
+    originNodeId: attachment.originNodeId
   };
 }
 
-export function blacklistEntryFromProto(entry: ProtoBlacklistEntry | undefined): BlacklistEntry {
-  if (entry == null) {
-    throw new ProtocolError("missing blacklist entry");
-  }
+export function subscriptionFromProto(subscription: ProtoAttachment | undefined): Subscription {
+  const attachment = attachmentFromProto(subscription);
   return {
-    owner: userRefFromProto(entry.owner),
-    blocked: userRefFromProto(entry.blocked),
-    blockedAt: entry.blockedAt,
-    deletedAt: entry.deletedAt,
-    originNodeId: entry.originNodeId
+    subscriber: attachment.owner,
+    channel: attachment.subject,
+    subscribedAt: attachment.attachedAt,
+    deletedAt: attachment.deletedAt,
+    originNodeId: attachment.originNodeId
+  };
+}
+
+export function blacklistEntryFromProto(entry: ProtoAttachment | undefined): BlacklistEntry {
+  const attachment = attachmentFromProto(entry);
+  return {
+    owner: attachment.owner,
+    blocked: attachment.subject,
+    blockedAt: attachment.attachedAt,
+    deletedAt: attachment.deletedAt,
+    originNodeId: attachment.originNodeId
   };
 }
 
@@ -254,11 +297,15 @@ export function messagesFromProto(items: ProtoMessage[]): Message[] {
   return items.map(messageFromProto);
 }
 
-export function subscriptionsFromProto(items: ProtoSubscription[]): Subscription[] {
+export function attachmentsFromProto(items: ProtoAttachment[]): Attachment[] {
+  return items.map(attachmentFromProto);
+}
+
+export function subscriptionsFromProto(items: ProtoAttachment[]): Subscription[] {
   return items.map(subscriptionFromProto);
 }
 
-export function blacklistEntriesFromProto(items: ProtoBlacklistEntry[]): BlacklistEntry[] {
+export function blacklistEntriesFromProto(items: ProtoAttachment[]): BlacklistEntry[] {
   return items.map(blacklistEntryFromProto);
 }
 

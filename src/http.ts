@@ -1,6 +1,8 @@
 import { ConnectionError, ProtocolError } from "./errors";
 import { passwordWireValue, plainPassword, type PasswordInput } from "./password";
 import {
+  AttachmentType,
+  type Attachment,
   DeliveryMode,
   type BlacklistEntry,
   type ClusterNode,
@@ -89,19 +91,7 @@ export class HTTPClient {
   }
 
   async createSubscription(token: string, user: UserRef, channel: UserRef, options?: RequestOptions): Promise<void> {
-    validateUserRef(user, "user");
-    validateUserRef(channel, "channel");
-    await this.doJSON(
-      "POST",
-      `/nodes/${user.nodeId}/users/${user.userId}/subscriptions`,
-      token,
-      {
-        channel_node_id: toRequiredWireInteger(channel.nodeId, "channel.nodeId"),
-        channel_user_id: toRequiredWireInteger(channel.userId, "channel.userId")
-      },
-      [200, 201],
-      options
-    );
+    await this.upsertAttachment(token, user, channel, AttachmentType.ChannelSubscription, new Uint8Array(), options);
   }
 
   async listMessages(token: string, target: UserRef, limit = 0, options?: RequestOptions): Promise<Message[]> {
@@ -182,48 +172,76 @@ export class HTTPClient {
   }
 
   async blockUser(token: string, owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
+    const attachment = await this.upsertAttachment(token, owner, blocked, AttachmentType.UserBlacklist, new Uint8Array(), options);
+    return blacklistEntryFromHTTP(attachment);
+  }
+
+  async unblockUser(token: string, owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
+    const attachment = await this.deleteAttachment(token, owner, blocked, AttachmentType.UserBlacklist, options);
+    return blacklistEntryFromHTTP(attachment);
+  }
+
+  async listBlockedUsers(token: string, owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
+    const items = await this.listAttachments(token, owner, AttachmentType.UserBlacklist, options);
+    return items.map(blacklistEntryFromHTTP);
+  }
+
+  async upsertAttachment(
+    token: string,
+    owner: UserRef,
+    subject: UserRef,
+    attachmentType: AttachmentType,
+    configJson: Uint8Array,
+    options?: RequestOptions
+  ): Promise<Attachment> {
     validateUserRef(owner, "owner");
-    validateUserRef(blocked, "blocked");
+    validateUserRef(subject, "subject");
     const response = await this.doJSON(
-      "POST",
-      `/nodes/${owner.nodeId}/users/${owner.userId}/blacklist`,
+      "PUT",
+      `/nodes/${owner.nodeId}/users/${owner.userId}/attachments/${attachmentType}/${subject.nodeId}/${subject.userId}`,
       token,
       {
-        blocked_node_id: toRequiredWireInteger(blocked.nodeId, "blocked.nodeId"),
-        blocked_user_id: toRequiredWireInteger(blocked.userId, "blocked.userId")
+        config_json: configJson.length === 0 ? {} : parseJson(bytesToUtf8(configJson))
       },
       [200, 201],
       options
     );
-    return blacklistEntryFromHTTP(response);
+    return attachmentFromHTTP(response);
   }
 
-  async unblockUser(token: string, owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
+  async deleteAttachment(
+    token: string,
+    owner: UserRef,
+    subject: UserRef,
+    attachmentType: AttachmentType,
+    options?: RequestOptions
+  ): Promise<Attachment> {
     validateUserRef(owner, "owner");
-    validateUserRef(blocked, "blocked");
+    validateUserRef(subject, "subject");
     const response = await this.doJSON(
       "DELETE",
-      `/nodes/${owner.nodeId}/users/${owner.userId}/blacklist/${blocked.nodeId}/${blocked.userId}`,
+      `/nodes/${owner.nodeId}/users/${owner.userId}/attachments/${attachmentType}/${subject.nodeId}/${subject.userId}`,
       token,
       undefined,
       [200],
       options
     );
-    return blacklistEntryFromHTTP(response);
+    return attachmentFromHTTP(response);
   }
 
-  async listBlockedUsers(token: string, owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
+  async listAttachments(token: string, owner: UserRef, attachmentType?: AttachmentType, options?: RequestOptions): Promise<Attachment[]> {
     validateUserRef(owner, "owner");
+    const query = attachmentType ? `?attachment_type=${encodeURIComponent(attachmentType)}` : "";
     const response = await this.doJSON(
       "GET",
-      `/nodes/${owner.nodeId}/users/${owner.userId}/blacklist`,
+      `/nodes/${owner.nodeId}/users/${owner.userId}/attachments${query}`,
       token,
       undefined,
       [200],
       options
     );
     const items = Array.isArray(response) ? response : arrayField(response, "items");
-    return items.map(blacklistEntryFromHTTP);
+    return items.map(attachmentFromHTTP);
   }
 
   private async doJSON(
@@ -337,12 +355,25 @@ function loggedInUserFromHTTP(value: unknown): LoggedInUser {
   };
 }
 
-function blacklistEntryFromHTTP(value: unknown): BlacklistEntry {
+function attachmentFromHTTP(value: unknown): Attachment {
   return {
     owner: userRefFromHTTP(objectField(value, "owner")),
-    blocked: userRefFromHTTP(objectField(value, "blocked")),
-    blockedAt: String(objectField(value, "blocked_at") ?? ""),
+    subject: userRefFromHTTP(objectField(value, "subject")),
+    attachmentType: String(objectField(value, "attachment_type") ?? "") as AttachmentType,
+    configJson: utf8ToBytes(stringifyJson(objectField(value, "config_json") ?? {})),
+    attachedAt: String(objectField(value, "attached_at") ?? ""),
     deletedAt: String(objectField(value, "deleted_at") ?? ""),
     originNodeId: idToString(objectField(value, "origin_node_id"))
+  };
+}
+
+function blacklistEntryFromHTTP(value: unknown): BlacklistEntry {
+  const attachment = attachmentFromHTTP(value);
+  return {
+    owner: attachment.owner,
+    blocked: attachment.subject,
+    blockedAt: attachment.attachedAt,
+    deletedAt: attachment.deletedAt,
+    originNodeId: attachment.originNodeId
   };
 }

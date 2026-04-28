@@ -3,6 +3,7 @@ import WebSocket, { type RawData } from "ws";
 import {
   ClientDeliveryKind,
   ClientEnvelope as ProtoClientEnvelope,
+  ClientMessageSyncMode,
   ServerEnvelope as ProtoServerEnvelope,
   type UpdateUserRequest as ProtoUpdateUserRequest,
   type SendMessageResponse as ProtoSendMessageResponse
@@ -17,6 +18,8 @@ import {
 } from "./errors";
 import { HTTPClient } from "./http";
 import {
+  attachmentFromProto,
+  attachmentTypeToProto,
   blacklistEntriesFromProto,
   blacklistEntryFromProto,
   clusterNodesFromProto,
@@ -36,6 +39,8 @@ import {
 import { passwordWireValue, validatePassword, type PasswordInput } from "./password";
 import { CursorStore, MemoryCursorStore } from "./store";
 import type {
+  Attachment,
+  AttachmentType,
   BlacklistEntry,
   ClusterNode,
   Credentials,
@@ -254,7 +259,8 @@ export class Client {
             target: userRefToProto(target),
             body: new Uint8Array(body),
             deliveryKind: ClientDeliveryKind.PERSISTENT,
-            deliveryMode: 0
+            deliveryMode: 0,
+            syncMode: ClientMessageSyncMode.UNSPECIFIED
           }
         }
       }),
@@ -291,7 +297,8 @@ export class Client {
             target: userRefToProto(target),
             body: new Uint8Array(body),
             deliveryKind: ClientDeliveryKind.TRANSIENT,
-            deliveryMode: deliveryModeToProto(deliveryMode)
+            deliveryMode: deliveryModeToProto(deliveryMode),
+            syncMode: ClientMessageSyncMode.UNSPECIFIED
           }
         }
       }),
@@ -420,27 +427,83 @@ export class Client {
     return result;
   }
 
-  async subscribeChannel(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
-    validateUserRef(subscriber, "subscriber");
-    validateUserRef(channel, "channel");
-
+  async upsertAttachment(owner: UserRef, subject: UserRef, attachmentType: AttachmentType, configJson = new Uint8Array(), options?: RequestOptions): Promise<Attachment> {
+    validateUserRef(owner, "owner");
+    validateUserRef(subject, "subject");
     const result = await this.rpc(
       (requestId) => ({
         body: {
-          oneofKind: "subscribeChannel",
-          subscribeChannel: {
+          oneofKind: "upsertUserAttachment",
+          upsertUserAttachment: {
             requestId,
-            subscriber: userRefToProto(subscriber),
-            channel: userRefToProto(channel)
+            owner: userRefToProto(owner),
+            subject: userRefToProto(subject),
+            attachmentType: attachmentTypeToProto(attachmentType),
+            configJson
           }
         }
       }),
       options
     );
-    if (!isSubscription(result)) {
-      throw new ProtocolError("missing subscription in subscribe_channel_response");
+    if (!isAttachment(result)) {
+      throw new ProtocolError("missing attachment in upsert_user_attachment_response");
     }
     return result;
+  }
+
+  async deleteAttachment(owner: UserRef, subject: UserRef, attachmentType: AttachmentType, options?: RequestOptions): Promise<Attachment> {
+    validateUserRef(owner, "owner");
+    validateUserRef(subject, "subject");
+    const result = await this.rpc(
+      (requestId) => ({
+        body: {
+          oneofKind: "deleteUserAttachment",
+          deleteUserAttachment: {
+            requestId,
+            owner: userRefToProto(owner),
+            subject: userRefToProto(subject),
+            attachmentType: attachmentTypeToProto(attachmentType)
+          }
+        }
+      }),
+      options
+    );
+    if (!isAttachment(result)) {
+      throw new ProtocolError("missing attachment in delete_user_attachment_response");
+    }
+    return result;
+  }
+
+  async listAttachments(owner: UserRef, attachmentType?: AttachmentType, options?: RequestOptions): Promise<Attachment[]> {
+    validateUserRef(owner, "owner");
+    const result = await this.rpc(
+      (requestId) => ({
+        body: {
+          oneofKind: "listUserAttachments",
+          listUserAttachments: {
+            requestId,
+            owner: userRefToProto(owner),
+            attachmentType: attachmentType == null ? 0 : attachmentTypeToProto(attachmentType)
+          }
+        }
+      }),
+      options
+    );
+    if (!Array.isArray(result)) {
+      throw new ProtocolError("missing items in list_user_attachments_response");
+    }
+    return result;
+  }
+
+  async subscribeChannel(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
+    const attachment = await this.upsertAttachment(subscriber, channel, "channel_subscription", new Uint8Array(), options);
+    return {
+      subscriber: attachment.owner,
+      channel: attachment.subject,
+      subscribedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    };
   }
 
   createSubscription(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
@@ -448,108 +511,58 @@ export class Client {
   }
 
   async unsubscribeChannel(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
-    validateUserRef(subscriber, "subscriber");
-    validateUserRef(channel, "channel");
-
-    const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "unsubscribeChannel",
-          unsubscribeChannel: {
-            requestId,
-            subscriber: userRefToProto(subscriber),
-            channel: userRefToProto(channel)
-          }
-        }
-      }),
-      options
-    );
-    if (!isSubscription(result)) {
-      throw new ProtocolError("missing subscription in unsubscribe_channel_response");
-    }
-    return result;
+    const attachment = await this.deleteAttachment(subscriber, channel, "channel_subscription", options);
+    return {
+      subscriber: attachment.owner,
+      channel: attachment.subject,
+      subscribedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    };
   }
 
   async listSubscriptions(subscriber: UserRef, options?: RequestOptions): Promise<Subscription[]> {
-    validateUserRef(subscriber, "subscriber");
-
-    const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "listSubscriptions",
-          listSubscriptions: { requestId, subscriber: userRefToProto(subscriber) }
-        }
-      }),
-      options
-    );
-    if (!Array.isArray(result)) {
-      throw new ProtocolError("missing items in list_subscriptions_response");
-    }
-    return result;
+    const items = await this.listAttachments(subscriber, "channel_subscription", options);
+    return items.map((attachment) => ({
+      subscriber: attachment.owner,
+      channel: attachment.subject,
+      subscribedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    }));
   }
 
   async blockUser(owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
-    validateUserRef(owner, "owner");
-    validateUserRef(blocked, "blocked");
-
-    const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "blockUser",
-          blockUser: {
-            requestId,
-            owner: userRefToProto(owner),
-            blocked: userRefToProto(blocked)
-          }
-        }
-      }),
-      options
-    );
-    if (!isBlacklistEntry(result)) {
-      throw new ProtocolError("missing entry in block_user_response");
-    }
-    return result;
+    const attachment = await this.upsertAttachment(owner, blocked, "user_blacklist", new Uint8Array(), options);
+    return {
+      owner: attachment.owner,
+      blocked: attachment.subject,
+      blockedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    };
   }
 
   async unblockUser(owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
-    validateUserRef(owner, "owner");
-    validateUserRef(blocked, "blocked");
-
-    const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "unblockUser",
-          unblockUser: {
-            requestId,
-            owner: userRefToProto(owner),
-            blocked: userRefToProto(blocked)
-          }
-        }
-      }),
-      options
-    );
-    if (!isBlacklistEntry(result)) {
-      throw new ProtocolError("missing entry in unblock_user_response");
-    }
-    return result;
+    const attachment = await this.deleteAttachment(owner, blocked, "user_blacklist", options);
+    return {
+      owner: attachment.owner,
+      blocked: attachment.subject,
+      blockedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    };
   }
 
   async listBlockedUsers(owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
-    validateUserRef(owner, "owner");
-
-    const result = await this.rpc(
-      (requestId) => ({
-        body: {
-          oneofKind: "listBlockedUsers",
-          listBlockedUsers: { requestId, owner: userRefToProto(owner) }
-        }
-      }),
-      options
-    );
-    if (!Array.isArray(result)) {
-      throw new ProtocolError("missing items in list_blocked_users_response");
-    }
-    return result;
+    const items = await this.listAttachments(owner, "user_blacklist", options);
+    return items.map((attachment) => ({
+      owner: attachment.owner,
+      blocked: attachment.subject,
+      blockedAt: attachment.attachedAt,
+      deletedAt: attachment.deletedAt,
+      originNodeId: attachment.originNodeId
+    }));
   }
 
   async listMessages(target: UserRef, limit = 0, options?: RequestOptions): Promise<Message[]> {
@@ -903,37 +916,22 @@ export class Client {
       case "listMessagesResponse":
         this.resolvePending(env.body.listMessagesResponse.requestId, env.body.listMessagesResponse.items.map(messageFromProto));
         return;
-      case "subscribeChannelResponse":
+      case "upsertUserAttachmentResponse":
         this.resolvePending(
-          env.body.subscribeChannelResponse.requestId,
-          subscriptionFromProto(env.body.subscribeChannelResponse.subscription)
+          env.body.upsertUserAttachmentResponse.requestId,
+          attachmentFromProto(env.body.upsertUserAttachmentResponse.attachment)
         );
         return;
-      case "unsubscribeChannelResponse":
+      case "deleteUserAttachmentResponse":
         this.resolvePending(
-          env.body.unsubscribeChannelResponse.requestId,
-          subscriptionFromProto(env.body.unsubscribeChannelResponse.subscription)
+          env.body.deleteUserAttachmentResponse.requestId,
+          attachmentFromProto(env.body.deleteUserAttachmentResponse.attachment)
         );
         return;
-      case "listSubscriptionsResponse":
+      case "listUserAttachmentsResponse":
         this.resolvePending(
-          env.body.listSubscriptionsResponse.requestId,
-          subscriptionsFromProto(env.body.listSubscriptionsResponse.items)
-        );
-        return;
-      case "blockUserResponse":
-        this.resolvePending(env.body.blockUserResponse.requestId, blacklistEntryFromProto(env.body.blockUserResponse.entry));
-        return;
-      case "unblockUserResponse":
-        this.resolvePending(
-          env.body.unblockUserResponse.requestId,
-          blacklistEntryFromProto(env.body.unblockUserResponse.entry)
-        );
-        return;
-      case "listBlockedUsersResponse":
-        this.resolvePending(
-          env.body.listBlockedUsersResponse.requestId,
-          blacklistEntriesFromProto(env.body.listBlockedUsersResponse.items)
+          env.body.listUserAttachmentsResponse.requestId,
+          env.body.listUserAttachmentsResponse.items.map(attachmentFromProto)
         );
         return;
       case "listEventsResponse":
@@ -1399,6 +1397,10 @@ function isUser(value: unknown): value is User {
 
 function isDeleteUserResult(value: unknown): value is DeleteUserResult {
   return value != null && typeof value === "object" && "status" in value && "user" in value;
+}
+
+function isAttachment(value: unknown): value is Attachment {
+  return value != null && typeof value === "object" && "owner" in value && "subject" in value;
 }
 
 function isSubscription(value: unknown): value is Subscription {

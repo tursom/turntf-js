@@ -392,13 +392,13 @@ describe("Client", () => {
 
       const subscribePromise = client.subscribeChannel(target, channel);
       const subscribeReq = await conn.readClientEnvelope();
-      const subscribeBody = clientBody(subscribeReq, "subscribeChannel");
+      const subscribeBody = clientBody(subscribeReq, "upsertUserAttachment");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "subscribeChannelResponse",
-          subscribeChannelResponse: {
-            requestId: subscribeBody.subscribeChannel.requestId,
-            subscription: subscriptionRecord(target, channel)
+          oneofKind: "upsertUserAttachmentResponse",
+          upsertUserAttachmentResponse: {
+            requestId: subscribeBody.upsertUserAttachment.requestId,
+            attachment: attachmentRecord(proto.AttachmentType.CHANNEL_SUBSCRIPTION, target, channel)
           }
         }
       });
@@ -406,13 +406,13 @@ describe("Client", () => {
 
       const listSubscriptionsPromise = client.listSubscriptions(target);
       const listSubscriptionsReq = await conn.readClientEnvelope();
-      const listSubscriptionsBody = clientBody(listSubscriptionsReq, "listSubscriptions");
+      const listSubscriptionsBody = clientBody(listSubscriptionsReq, "listUserAttachments");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "listSubscriptionsResponse",
-          listSubscriptionsResponse: {
-            requestId: listSubscriptionsBody.listSubscriptions.requestId,
-            items: [subscriptionRecord(target, channel)],
+          oneofKind: "listUserAttachmentsResponse",
+          listUserAttachmentsResponse: {
+            requestId: listSubscriptionsBody.listUserAttachments.requestId,
+            items: [attachmentRecord(proto.AttachmentType.CHANNEL_SUBSCRIPTION, target, channel)],
             count: 1
           }
         }
@@ -421,13 +421,13 @@ describe("Client", () => {
 
       const unsubscribePromise = client.unsubscribeChannel(target, channel);
       const unsubscribeReq = await conn.readClientEnvelope();
-      const unsubscribeBody = clientBody(unsubscribeReq, "unsubscribeChannel");
+      const unsubscribeBody = clientBody(unsubscribeReq, "deleteUserAttachment");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "unsubscribeChannelResponse",
-          unsubscribeChannelResponse: {
-            requestId: unsubscribeBody.unsubscribeChannel.requestId,
-            subscription: subscriptionRecord(target, channel)
+          oneofKind: "deleteUserAttachmentResponse",
+          deleteUserAttachmentResponse: {
+            requestId: unsubscribeBody.deleteUserAttachment.requestId,
+            attachment: attachmentRecord(proto.AttachmentType.CHANNEL_SUBSCRIPTION, target, channel)
           }
         }
       });
@@ -435,13 +435,13 @@ describe("Client", () => {
 
       const blockPromise = client.blockUser(target, blocked);
       const blockReq = await conn.readClientEnvelope();
-      const blockBody = clientBody(blockReq, "blockUser");
+      const blockBody = clientBody(blockReq, "upsertUserAttachment");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "blockUserResponse",
-          blockUserResponse: {
-            requestId: blockBody.blockUser.requestId,
-            entry: blacklistRecord(target, blocked)
+          oneofKind: "upsertUserAttachmentResponse",
+          upsertUserAttachmentResponse: {
+            requestId: blockBody.upsertUserAttachment.requestId,
+            attachment: attachmentRecord(proto.AttachmentType.USER_BLACKLIST, target, blocked)
           }
         }
       });
@@ -449,13 +449,13 @@ describe("Client", () => {
 
       const listBlockedPromise = client.listBlockedUsers(target);
       const listBlockedReq = await conn.readClientEnvelope();
-      const listBlockedBody = clientBody(listBlockedReq, "listBlockedUsers");
+      const listBlockedBody = clientBody(listBlockedReq, "listUserAttachments");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "listBlockedUsersResponse",
-          listBlockedUsersResponse: {
-            requestId: listBlockedBody.listBlockedUsers.requestId,
-            items: [blacklistRecord(target, blocked)],
+          oneofKind: "listUserAttachmentsResponse",
+          listUserAttachmentsResponse: {
+            requestId: listBlockedBody.listUserAttachments.requestId,
+            items: [attachmentRecord(proto.AttachmentType.USER_BLACKLIST, target, blocked)],
             count: 1
           }
         }
@@ -464,13 +464,13 @@ describe("Client", () => {
 
       const unblockPromise = client.unblockUser(target, blocked);
       const unblockReq = await conn.readClientEnvelope();
-      const unblockBody = clientBody(unblockReq, "unblockUser");
+      const unblockBody = clientBody(unblockReq, "deleteUserAttachment");
       await conn.sendServerEnvelope({
         body: {
-          oneofKind: "unblockUserResponse",
-          unblockUserResponse: {
-            requestId: unblockBody.unblockUser.requestId,
-            entry: blacklistRecord(target, blocked)
+          oneofKind: "deleteUserAttachmentResponse",
+          deleteUserAttachmentResponse: {
+            requestId: unblockBody.deleteUserAttachment.requestId,
+            attachment: attachmentRecord(proto.AttachmentType.USER_BLACKLIST, target, blocked)
           }
         }
       });
@@ -1042,21 +1042,17 @@ function messageRecord(seq: string): proto.Message {
   };
 }
 
-function subscriptionRecord(subscriber: UserRef, channel: UserRef): proto.Subscription {
-  return {
-    subscriber,
-    channel,
-    subscribedAt: "2026-04-28T00:00:00Z",
-    deletedAt: "",
-    originNodeId: "4096"
-  };
-}
-
-function blacklistRecord(owner: UserRef, blocked: UserRef): proto.BlacklistEntry {
+function attachmentRecord(
+  attachmentType: proto.AttachmentType,
+  owner: UserRef,
+  subject: UserRef
+): proto.Attachment {
   return {
     owner,
-    blocked,
-    blockedAt: "2026-04-28T00:00:00Z",
+    subject,
+    attachmentType,
+    configJson: Buffer.from("{}"),
+    attachedAt: "2026-04-28T00:00:00Z",
     deletedAt: "",
     originNodeId: "4096"
   };
