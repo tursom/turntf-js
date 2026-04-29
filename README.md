@@ -1,16 +1,32 @@
 # turntf-js
 
-`turntf-js` 是 turntf 的 Node.js SDK，提供两类客户端能力：
+`turntf-js` 是 turntf 的 Node.js / TypeScript SDK，面向 Node.js 20+ 运行时，提供：
 
-- WebSocket + Protobuf 长连接客户端
-- HTTP JSON 管理与查询客户端
-- 密码处理辅助方法
-- 类型安全的 turntf 数据模型
-- 由 `proto/client.proto` 生成的 protobuf 类型与编解码对象
+- Bearer Token 驱动的 HTTP JSON 客户端 `HTTPClient`
+- 密码首帧登录的 WS-first 长连接客户端 `Client`
+- 密码处理辅助函数、类型安全的数据模型与 protobuf 访问入口 `proto`
+
+SDK 里的 64 位整数 ID 一律以十进制字符串暴露，例如 `nodeId`、`userId`、`seq`、`packetId`，避免 JavaScript `number` 精度丢失。
+
+## 文档导航
+
+- [SDK 接入指南](docs/sdk-guide.md)
+- [开发、测试与发布](docs/development.md)
+
+## 模块定位
+
+| 入口 | 认证方式 | 连接形态 | 适合场景 | 主要能力 |
+| --- | --- | --- | --- | --- |
+| `HTTPClient` | HTTP 登录换取 Bearer Token | 无状态请求 | 管理脚本、批处理、简单查询、只走 HTTP 的后端任务 | 登录、创建用户、附件/黑名单管理、列消息、发持久消息、发瞬时包、在线节点查询 |
+| `Client` | WebSocket 首帧用密码登录 | 长连接 | 在线消息消费、自动重连、消息游标、瞬时包、会话定向发送 | `MessagePushed` / `PacketPushed`、自动 ack、`CursorStore`、WS RPC、`resolveUserSessions()`、`sessionRef` |
+
+几个容易混淆的点：
+
+- `Client` 是 WS-first 高级入口，但它仍然暴露 `client.http`，方便在同一个实例里混用 HTTP 能力。
+- `Client.login()` / `Client.loginWithPassword()` 只是透传到内部 `HTTPClient`，用于获取 HTTP Token；真正的 WebSocket 登录发生在 `connect()` 里。
+- 当前 SDK 里，`resolveUserSessions()` 与按会话定向的 `sendPacket(..., { targetSession })` 只在 `Client` 上提供。
 
 ## 安装
-
-### 从 GitHub Packages 安装
 
 先配置 `.npmrc`：
 
@@ -54,15 +70,11 @@ const request: CreateUserRequest = {
 const user = await client.createUser(token, request);
 
 const target: UserRef = { nodeId: user.nodeId, userId: user.userId };
-await client.listMessages(token, target, 20);
+const messages = await client.listMessages(token, target, 20);
+console.log(messages.length);
 ```
 
 ### `Client`
-
-`Client` 是新的 WS-first 高级入口：
-
-- HTTP 登录仍走 `client.login()` / `client.loginWithPassword()` 或 `client.http`
-- 长连接登录、消息推送、自动 ack、自动重连、WS RPC 全部由 `Client` 负责
 
 ```ts
 import {
@@ -72,16 +84,21 @@ import {
   NopHandler,
   plainPasswordSync,
   type LoginInfo,
-  type Message
+  type Message,
+  type Packet
 } from "@tursom/turntf-js";
 
 class Handler extends NopHandler {
   override onLogin(info: LoginInfo): void {
-    console.log("login ok", info.user.userId, info.protocolVersion, info.sessionRef.sessionId);
+    console.log("login ok", info.user.userId, info.sessionRef.sessionId);
   }
 
   override onMessage(message: Message): void {
     console.log("message", message.seq, Buffer.from(message.body).toString("utf8"));
+  }
+
+  override onPacket(packet: Packet): void {
+    console.log("packet", packet.packetId, packet.targetSession?.sessionId);
   }
 }
 
@@ -97,21 +114,13 @@ const client = new Client({
 });
 
 await client.connect();
+console.log(client.sessionRef);
+
 await client.sendMessage(
   { nodeId: "4096", userId: "1025" },
   Buffer.from("hello")
 );
-await client.close();
-```
 
-连接成功后，SDK 会同时暴露当前登录会话：
-
-- `handler.onLogin(info)` 里的 `info.sessionRef`
-- `client.sessionRef`
-
-如果你要做会话定向的瞬时点对点发送，可以先解析目标用户当前在线会话，再把选中的 `targetSession` 传给 `sendPacket()`：
-
-```ts
 const target = { nodeId: "8192", userId: "1025" };
 const resolved = await client.resolveUserSessions(target);
 const session = resolved.sessions.find((item) => item.transientCapable)?.session;
@@ -124,37 +133,20 @@ if (session) {
     { targetSession: session }
   );
 }
+
+await client.close();
 ```
 
-`Client` 公开的方法包括：
+## 关键行为摘要
 
-- 连接与基础能力：`connect()`、`close()`、`ping()`
-- 实时发送：`sendMessage()` / `postMessage()`、`sendPacket()` / `postPacket()`；其中 `sendPacket()` 支持 `options.targetSession`
-- WS RPC：`createUser()`、`getUser()`、`updateUser()`、`deleteUser()`、`subscribeChannel()`、`listMessages()`、`listEvents()`、`listClusterNodes()`、`listNodeLoggedInUsers()`、`resolveUserSessions()`、`metrics()` 等
-- HTTP 直通：`client.http`
+- `Client` 收到持久消息时，会按 `saveMessage -> saveCursor -> 可选 ack -> handler.onMessage` 的顺序处理。
+- `sendMessage()` 返回的 `Message` 也会走同一套持久化与回调流程；如果业务已经在 `handler.onMessage` 里消费，就不要再把 `sendMessage()` 的返回值当成第二次投递。
+- `PacketPushed` 是瞬时包，不会自动写入 `CursorStore`，也不参与 `AckMessage` 或重连补发。
+- `sessionRef` 会同时出现在 `handler.onLogin(info).sessionRef` 和 `client.sessionRef`；断线后会被清空。
 
-## CursorStore
+## Proto 访问
 
-`CursorStore` 是 SDK 与业务侧消息持久化之间的接缝：
-
-```ts
-interface CursorStore {
-  loadSeenMessages(): Promise<MessageCursor[]> | MessageCursor[];
-  saveMessage(message: Message): Promise<void> | void;
-  saveCursor(cursor: MessageCursor): Promise<void> | void;
-}
-```
-
-`MessagePushed` 和持久化的 `SendMessageResponse.message` 到达后，SDK 会按固定顺序执行：
-
-1. `saveMessage`
-2. `saveCursor`
-3. 发送 `AckMessage`
-4. 调用 `handler.onMessage`
-
-如果只是本地测试，可以直接使用 `MemoryCursorStore`。
-
-如果你需要直接使用生成的 protobuf 类型，可以从 `proto` 命名空间访问：
+可以直接使用生成的 protobuf 类型与编解码器：
 
 ```ts
 import { proto } from "@tursom/turntf-js";
@@ -162,7 +154,7 @@ import { proto } from "@tursom/turntf-js";
 const envelope = proto.ClientEnvelope.create({
   body: {
     oneofKind: "ping",
-    ping: {}
+    ping: { requestId: "1" }
   }
 });
 ```
@@ -173,30 +165,4 @@ const envelope = proto.ClientEnvelope.create({
 import protoPath from "@tursom/turntf-js/proto/client.proto";
 ```
 
-## 发布流程
-
-仓库已经附带 GitHub Actions：
-
-- `CI`：在 `master` 分支 push / PR 时执行 `typecheck`、`test`、`build`、`pack:check`
-- `Publish`：在推送 `v*` tag 时自动发布到 GitHub Packages，并创建 GitHub Release
-
-推荐发布步骤：
-
-```bash
-npm version patch
-git push origin master --follow-tags
-```
-
-工作流会校验 tag 和 `package.json` 里的版本号是否一致，例如 `v0.1.1` 对应 `0.1.1`。
-
-如果你想手动发布到 GitHub Packages，也可以直接运行：
-
-```bash
-npm publish
-```
-
-默认会使用 `publishConfig.registry` 指向 `https://npm.pkg.github.com`。如果以后要改为发布到 npmjs.com，可以显式覆盖：
-
-```bash
-npm publish --registry https://registry.npmjs.org
-```
+关于 `HTTPClient` / `Client` 的职责分工、`CursorStore`、自动重连、`sessionRef`、`resolveUserSessions()`、错误模型、测试与发布流程，见上面的两份详细文档。
