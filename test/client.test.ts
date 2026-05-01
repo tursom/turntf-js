@@ -645,6 +645,123 @@ describe("Client", () => {
     }
   });
 
+  it("handles user metadata RPCs", async () => {
+    const server = await TestServer.start();
+    const client = new Client({
+      baseUrl: server.baseUrl(),
+      credentials: {
+        nodeId: "4096",
+        userId: "1025",
+        password: plainPasswordSync("alice-password")
+      },
+      requestTimeoutMs: 200,
+      pingIntervalMs: 60_000
+    });
+
+    const owner: UserRef = { nodeId: "4096", userId: "1025" };
+    const key = "prefs.theme";
+    const expiresAt = "2026-05-01T00:00:00Z";
+
+    try {
+      const connectPromise = client.connect();
+      const conn = await server.nextConnection();
+      await conn.readClientEnvelope();
+      await conn.sendServerEnvelope(loginResponseEnvelope());
+      await connectPromise;
+
+      const getPromise = client.getUserMetadata(owner, key);
+      const getReq = await conn.readClientEnvelope();
+      const getBody = clientBody(getReq, "getUserMetadata");
+      expect(getBody.getUserMetadata.owner).toEqual(owner);
+      expect(getBody.getUserMetadata.key).toBe(key);
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "getUserMetadataResponse",
+          getUserMetadataResponse: {
+            requestId: getBody.getUserMetadata.requestId,
+            metadata: userMetadataRecord(key, new Uint8Array([0xff, 0x00]), "", expiresAt, "hlc-get")
+          }
+        }
+      });
+      const got = await getPromise;
+      expect(got.key).toBe(key);
+      expect(Array.from(got.value)).toEqual([0xff, 0x00]);
+      expect(got.expiresAt).toBe(expiresAt);
+
+      const upsertPromise = client.upsertUserMetadata(owner, key, {
+        value: new Uint8Array(),
+        expiresAt
+      });
+      const upsertReq = await conn.readClientEnvelope();
+      const upsertBody = clientBody(upsertReq, "upsertUserMetadata");
+      expect(upsertBody.upsertUserMetadata.owner).toEqual(owner);
+      expect(upsertBody.upsertUserMetadata.key).toBe(key);
+      expect(Array.from(upsertBody.upsertUserMetadata.value)).toEqual([]);
+      expect(upsertBody.upsertUserMetadata.expiresAt?.value).toBe(expiresAt);
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "upsertUserMetadataResponse",
+          upsertUserMetadataResponse: {
+            requestId: upsertBody.upsertUserMetadata.requestId,
+            metadata: userMetadataRecord(key, new Uint8Array(), "", expiresAt, "hlc-upsert")
+          }
+        }
+      });
+      expect((await upsertPromise).updatedAt).toBe("hlc-upsert");
+
+      const scanPromise = client.scanUserMetadata(owner, {
+        prefix: "prefs.",
+        after: key,
+        limit: 2
+      });
+      const scanReq = await conn.readClientEnvelope();
+      const scanBody = clientBody(scanReq, "scanUserMetadata");
+      expect(scanBody.scanUserMetadata.owner).toEqual(owner);
+      expect(scanBody.scanUserMetadata.prefix).toBe("prefs.");
+      expect(scanBody.scanUserMetadata.after).toBe(key);
+      expect(scanBody.scanUserMetadata.limit).toBe(2);
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "scanUserMetadataResponse",
+          scanUserMetadataResponse: {
+            requestId: scanBody.scanUserMetadata.requestId,
+            items: [
+              userMetadataRecord("prefs.alpha", new Uint8Array([0xaa]), "", "", "hlc-scan-1"),
+              userMetadataRecord("prefs.beta", Buffer.from("next"), "", expiresAt, "hlc-scan-2")
+            ],
+            count: 2,
+            nextAfter: "prefs.beta"
+          }
+        }
+      });
+      const page = await scanPromise;
+      expect(page.count).toBe(2);
+      expect(page.nextAfter).toBe("prefs.beta");
+      expect(page.items).toHaveLength(2);
+      expect(Array.from(page.items[1]!.value)).toEqual(Array.from(Buffer.from("next")));
+
+      const deletePromise = client.deleteUserMetadata(owner, key);
+      const deleteReq = await conn.readClientEnvelope();
+      const deleteBody = clientBody(deleteReq, "deleteUserMetadata");
+      expect(deleteBody.deleteUserMetadata.key).toBe(key);
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "deleteUserMetadataResponse",
+          deleteUserMetadataResponse: {
+            requestId: deleteBody.deleteUserMetadata.requestId,
+            metadata: userMetadataRecord(key, Buffer.from("gone"), "hlc-deleted", expiresAt, "hlc-upsert")
+          }
+        }
+      });
+      const deleted = await deletePromise;
+      expect(deleted.deletedAt).toBe("hlc-deleted");
+      expect(Array.from(deleted.value)).toEqual(Array.from(Buffer.from("gone")));
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("resolves sessions and targets transient packets to a specific session", async () => {
     const server = await TestServer.start();
     const handler = new RecordingHandler();
@@ -1146,6 +1263,24 @@ function loginResponseEnvelope(sessionId = "session-alice"): proto.ServerEnvelop
 
 function sessionRefRecord(sessionId: string, servingNodeId = "4096"): proto.SessionRef {
   return { servingNodeId, sessionId };
+}
+
+function userMetadataRecord(
+  key: string,
+  value: Uint8Array,
+  deletedAt = "",
+  expiresAt = "",
+  updatedAt = "hlc-meta"
+): proto.UserMetadata {
+  return {
+    owner: { nodeId: "4096", userId: "1025" },
+    key,
+    value,
+    updatedAt,
+    deletedAt,
+    expiresAt,
+    originNodeId: "4096"
+  };
 }
 
 function clientBody<K extends proto.ClientEnvelope["body"]["oneofKind"]>(

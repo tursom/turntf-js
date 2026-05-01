@@ -15,8 +15,10 @@ import {
   type ProjectionStatus as ProtoProjectionStatus,
   type ResolveUserSessionsResponse as ProtoResolveUserSessionsResponse,
   type ResolvedSession as ProtoResolvedSession,
+  type ScanUserMetadataResponse as ProtoScanUserMetadataResponse,
   type SessionRef as ProtoSessionRef,
   type TransientAccepted as ProtoTransientAccepted,
+  type UserMetadata as ProtoUserMetadata,
   type User as ProtoUser,
   type UserRef as ProtoUserRef
 } from "./generated/client";
@@ -43,6 +45,8 @@ import {
   type ResolvedSession,
   type SessionRef,
   type Subscription,
+  type UserMetadata,
+  type UserMetadataScanResult,
   type User,
   type UserRef
 } from "./types";
@@ -195,6 +199,34 @@ export function attachmentFromProto(attachment: ProtoAttachment | undefined): At
     attachedAt: attachment.attachedAt,
     deletedAt: attachment.deletedAt,
     originNodeId: attachment.originNodeId
+  };
+}
+
+export function userMetadataFromProto(metadata: ProtoUserMetadata | undefined): UserMetadata {
+  if (metadata == null) {
+    throw new ProtocolError("missing metadata");
+  }
+  return {
+    owner: userRefFromProto(metadata.owner),
+    key: metadata.key,
+    value: cloneBytes(metadata.value),
+    updatedAt: metadata.updatedAt,
+    deletedAt: metadata.deletedAt,
+    expiresAt: metadata.expiresAt,
+    originNodeId: metadata.originNodeId
+  };
+}
+
+export function userMetadataScanResultFromProto(
+  response: ProtoScanUserMetadataResponse | undefined
+): UserMetadataScanResult {
+  if (response == null) {
+    throw new ProtocolError("missing scan_user_metadata_response");
+  }
+  return {
+    items: response.items.map(userMetadataFromProto),
+    count: response.count,
+    nextAfter: response.nextAfter
   };
 }
 

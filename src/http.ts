@@ -10,6 +10,10 @@ import {
   type LoggedInUser,
   type Message,
   type RequestOptions,
+  type ScanUserMetadataRequest,
+  type UpsertUserMetadataRequest,
+  type UserMetadata,
+  type UserMetadataScanResult,
   type User,
   type UserRef
 } from "./types";
@@ -22,7 +26,14 @@ import {
   stringifyJson,
   utf8ToBytes
 } from "./utils";
-import { idToString, toRequiredWireInteger, validateDeliveryMode, validateUserRef } from "./validation";
+import {
+  idToString,
+  toRequiredWireInteger,
+  validateDeliveryMode,
+  validateUserMetadataKey,
+  validateUserMetadataScanRequest,
+  validateUserRef
+} from "./validation";
 
 export interface HTTPClientOptions {
   fetch?: typeof fetch;
@@ -184,6 +195,93 @@ export class HTTPClient {
   async listBlockedUsers(token: string, owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
     const items = await this.listAttachments(token, owner, AttachmentType.UserBlacklist, options);
     return items.map(blacklistEntryFromHTTP);
+  }
+
+  async getUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
+    validateUserRef(owner, "owner");
+    validateUserMetadataKey(key, "key");
+    const response = await this.doJSON(
+      "GET",
+      `/nodes/${owner.nodeId}/users/${owner.userId}/metadata/${encodeURIComponent(key)}`,
+      token,
+      undefined,
+      [200],
+      options
+    );
+    return userMetadataFromHTTP(response);
+  }
+
+  async upsertUserMetadata(
+    token: string,
+    owner: UserRef,
+    key: string,
+    request: UpsertUserMetadataRequest,
+    options?: RequestOptions
+  ): Promise<UserMetadata> {
+    validateUserRef(owner, "owner");
+    validateUserMetadataKey(key, "key");
+    if (request.value == null) {
+      throw new Error("value is required");
+    }
+    const body: Record<string, unknown> = {
+      value: bytesToBase64(request.value)
+    };
+    if (request.expiresAt !== undefined) {
+      body.expires_at = request.expiresAt;
+    }
+    const response = await this.doJSON(
+      "PUT",
+      `/nodes/${owner.nodeId}/users/${owner.userId}/metadata/${encodeURIComponent(key)}`,
+      token,
+      body,
+      [200, 201],
+      options
+    );
+    return userMetadataFromHTTP(response);
+  }
+
+  async deleteUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
+    validateUserRef(owner, "owner");
+    validateUserMetadataKey(key, "key");
+    const response = await this.doJSON(
+      "DELETE",
+      `/nodes/${owner.nodeId}/users/${owner.userId}/metadata/${encodeURIComponent(key)}`,
+      token,
+      undefined,
+      [200],
+      options
+    );
+    return userMetadataFromHTTP(response);
+  }
+
+  async scanUserMetadata(
+    token: string,
+    owner: UserRef,
+    request: ScanUserMetadataRequest = {},
+    options?: RequestOptions
+  ): Promise<UserMetadataScanResult> {
+    validateUserRef(owner, "owner");
+    validateUserMetadataScanRequest(request, "request");
+    const query = new URLSearchParams();
+    if (request.prefix != null && request.prefix !== "") {
+      query.set("prefix", request.prefix);
+    }
+    if (request.after != null && request.after !== "") {
+      query.set("after", request.after);
+    }
+    if (request.limit != null && request.limit > 0) {
+      query.set("limit", String(request.limit));
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    const response = await this.doJSON(
+      "GET",
+      `/nodes/${owner.nodeId}/users/${owner.userId}/metadata${suffix}`,
+      token,
+      undefined,
+      [200],
+      options
+    );
+    return userMetadataScanResultFromHTTP(response);
   }
 
   async upsertAttachment(
@@ -375,5 +473,27 @@ function blacklistEntryFromHTTP(value: unknown): BlacklistEntry {
     blockedAt: attachment.attachedAt,
     deletedAt: attachment.deletedAt,
     originNodeId: attachment.originNodeId
+  };
+}
+
+function userMetadataFromHTTP(value: unknown): UserMetadata {
+  return {
+    owner: userRefFromHTTP(objectField(value, "owner")),
+    key: String(objectField(value, "key") ?? ""),
+    value: base64ToBytes(String(objectField(value, "value") ?? "")),
+    updatedAt: String(objectField(value, "updated_at") ?? ""),
+    deletedAt: String(objectField(value, "deleted_at") ?? ""),
+    expiresAt: String(objectField(value, "expires_at") ?? ""),
+    originNodeId: idToString(objectField(value, "origin_node_id"))
+  };
+}
+
+function userMetadataScanResultFromHTTP(value: unknown): UserMetadataScanResult {
+  const items = arrayField(value, "items").map(userMetadataFromHTTP);
+  const count = objectField(value, "count");
+  return {
+    items,
+    count: typeof count === "number" ? count : items.length,
+    nextAfter: String(objectField(value, "next_after") ?? "")
   };
 }

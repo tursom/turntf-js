@@ -89,6 +89,22 @@ export interface Attachment {
   originNodeId: string;
 }
 
+export interface UserMetadata {
+  owner: UserRef;
+  key: string;
+  value: Uint8Array;
+  updatedAt: string;
+  deletedAt: string;
+  expiresAt: string;
+  originNodeId: string;
+}
+
+export interface UserMetadataScanResult {
+  items: UserMetadata[];
+  count: number;
+  nextAfter: string;
+}
+
 export interface Subscription {
   subscriber: UserRef;
   channel: UserRef;
@@ -239,6 +255,17 @@ export interface UpdateUserRequest {
   password?: PasswordInput;
   profileJson?: Uint8Array;
   role?: string;
+}
+
+export interface UpsertUserMetadataRequest {
+  value: Uint8Array;
+  expiresAt?: string;
+}
+
+export interface ScanUserMetadataRequest {
+  prefix?: string;
+  after?: string;
+  limit?: number;
 }
 
 export interface RequestOptions {
