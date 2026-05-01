@@ -1,5 +1,7 @@
 import {
+  type Credentials,
   DeliveryMode,
+  type LoginNameCredentials,
   type Message,
   type MessageCursor,
   type ScanUserMetadataRequest,
@@ -11,6 +13,10 @@ const unsignedDecimalPattern = /^(0|[1-9][0-9]*)$/;
 const userMetadataKeyPattern = /^[A-Za-z0-9._:-]*$/;
 const userMetadataKeyMaxLength = 128;
 const userMetadataScanLimitMax = 1000;
+
+export function normalizeLoginName(value: string): string {
+  return value.trim();
+}
 
 export function assertDecimalString(value: string, field: string): void {
   if (!unsignedDecimalPattern.test(value)) {
@@ -28,6 +34,41 @@ export function assertRequiredDecimalString(value: string, field: string): void 
 export function validateUserRef(ref: UserRef, field = "user"): void {
   assertRequiredDecimalString(ref.nodeId, `${field}.nodeId`);
   assertRequiredDecimalString(ref.userId, `${field}.userId`);
+}
+
+export function validateLoginName(value: string, field = "loginName"): void {
+  if (normalizeLoginName(value) === "") {
+    throw new Error(`${field} is required`);
+  }
+}
+
+export function isLoginNameCredentials(credentials: Credentials): credentials is LoginNameCredentials {
+  return "loginName" in credentials && typeof credentials.loginName === "string";
+}
+
+export function validateCredentials(credentials: Credentials, field = "credentials"): void {
+  const hasNodeId = "nodeId" in credentials && typeof credentials.nodeId === "string";
+  const hasUserId = "userId" in credentials && typeof credentials.userId === "string";
+  const hasLoginName = isLoginNameCredentials(credentials);
+
+  if (hasLoginName) {
+    validateLoginName(credentials.loginName, `${field}.loginName`);
+  }
+  if (hasNodeId || hasUserId) {
+    if (!hasNodeId || !hasUserId) {
+      throw new Error(`${field}.nodeId and ${field}.userId must be provided together`);
+    }
+    validateUserRef(
+      {
+        nodeId: credentials.nodeId,
+        userId: credentials.userId
+      },
+      field
+    );
+  }
+  if ((hasNodeId || hasUserId) === hasLoginName) {
+    throw new Error(`exactly one of ${field}.(nodeId,userId) or ${field}.loginName must be provided`);
+  }
 }
 
 export function validateSessionRef(ref: SessionRef, field = "session"): void {

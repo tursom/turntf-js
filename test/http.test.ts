@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { HTTPClient } from "../src/index";
+import { HTTPClient, plainPasswordSync } from "../src/index";
 import type { UserRef } from "../src/types";
 
 describe("HTTPClient", () => {
@@ -118,5 +118,85 @@ describe("HTTPClient", () => {
     const deleted = await client.deleteUserMetadata("admin-token", owner, key);
     expect(deleted.deletedAt).toBe("hlc-deleted");
     expect(Array.from(deleted.value)).toEqual(Array.from(Buffer.from("gone")));
+  });
+
+  it("supports login_name login and maps login_name fields", async () => {
+    const client = new HTTPClient("http://turntf.test", {
+      fetch: async (input, init) => {
+        const request = input instanceof Request ? input : undefined;
+        const url = new URL(request?.url ?? String(input));
+        const method = init?.method ?? request?.method ?? "GET";
+        const headers = new Headers(init?.headers ?? request?.headers);
+
+        if (url.pathname === "/auth/login" && method === "POST") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
+          expect(body.login_name).toBe("alice.login");
+          expect("node_id" in body).toBe(false);
+          expect("user_id" in body).toBe(false);
+          return Response.json({
+            token: "alice-token",
+            user: {
+              node_id: "4096",
+              user_id: "1025",
+              username: "alice",
+              login_name: "alice.login"
+            }
+          });
+        }
+
+        expect(headers.get("Authorization")).toBe("Bearer admin-token");
+
+        if (url.pathname === "/users" && method === "POST") {
+          const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, string>;
+          expect(body.username).toBe("alice");
+          expect(body.login_name).toBe("alice.login");
+          expect(typeof body.password).toBe("string");
+          return Response.json(
+            {
+              node_id: "4096",
+              user_id: "1025",
+              username: "alice",
+              login_name: "alice.login",
+              role: "user",
+              profile: {},
+              system_reserved: false,
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              origin_node_id: "4096"
+            },
+            { status: 201 }
+          );
+        }
+
+        if (url.pathname === "/cluster/nodes/4096/logged-in-users" && method === "GET") {
+          return Response.json({
+            target_node_id: "4096",
+            items: [
+              { node_id: "4096", user_id: "1025", username: "alice", login_name: "alice.login" }
+            ],
+            count: 1
+          });
+        }
+
+        throw new Error(`unexpected request: ${method} ${url.toString()}`);
+      }
+    });
+
+    const token = await client.loginWithPassword(
+      " alice.login ",
+      plainPasswordSync("alice-password")
+    );
+    expect(token).toBe("alice-token");
+
+    const created = await client.createUser("admin-token", {
+      username: "alice",
+      loginName: " alice.login ",
+      password: plainPasswordSync("alice-password"),
+      role: "user"
+    });
+    expect(created.loginName).toBe("alice.login");
+
+    const users = await client.listNodeLoggedInUsers("admin-token", "4096");
+    expect(users[0]?.loginName).toBe("alice.login");
   });
 });

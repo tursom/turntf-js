@@ -38,6 +38,7 @@
 要点：
 
 - `HTTPClient` 目前不是服务端 HTTP API 的“全量镜像”。
+- `login()` / `loginWithPassword()` 同时支持旧 `nodeId + userId + password` 和新 `login_name + password`。
 - `resolveUserSessions()`、`operationsStatus()`、`metrics()`、按 `targetSession` 定向的瞬时包发送，不在 `HTTPClient` 上。
 - `HTTPClientOptions.fetch` 只影响 HTTP 请求，适合测试注入或自定义代理。
 
@@ -63,6 +64,7 @@
 
 - `Client.login()` / `Client.loginWithPassword()` 只是 `client.http` 的快捷代理，不会建立 WebSocket。
 - 真正的 WebSocket 认证发生在 `await client.connect()` 里，认证材料来自 `ClientOptions.credentials`。
+- `ClientOptions.credentials` 支持 `{ nodeId, userId, password }` 和 `{ loginName, password }` 两种写法，但只能二选一。
 
 ## 3. 安装
 
@@ -98,6 +100,7 @@ const token = await http.loginWithPassword(
 
 const request: CreateUserRequest = {
   username: "alice",
+  loginName: "alice.login",
   password: plainPasswordSync("alice-password"),
   role: "user"
 };
@@ -148,8 +151,7 @@ class Handler extends NopHandler {
 const client = new Client({
   baseUrl: "http://127.0.0.1:8080",
   credentials: {
-    nodeId: "4096",
-    userId: "1025",
+    loginName: "alice.login",
     password: plainPasswordSync("alice-password")
   },
   handler: new Handler()
@@ -173,7 +175,7 @@ await client.close();
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `baseUrl` | 无 | 必填，支持 `http(s)://`，也接受 `ws(s)://` |
-| `credentials` | 无 | 必填，包含 `nodeId`、`userId`、`password` |
+| `credentials` | 无 | 必填，使用 `{ nodeId, userId, password }` 或 `{ loginName, password }` 二选一 |
 | `cursorStore` | `new MemoryCursorStore()` | 持久消息游标存储，生产环境建议替换 |
 | `handler` | `new NopHandler()` | 回调接收器 |
 | `fetch` | `globalThis.fetch` | 只用于内部 `HTTPClient` |
@@ -190,6 +192,7 @@ await client.close();
 
 - 对于所有数值型超时/延迟参数，若传入非正数或非有限值，SDK 会回退到默认值。
 - `credentials.password` 需要是 `plainPasswordSync()`、`plainPassword()` 或 `hashedPassword()` 生成的 `PasswordInput`。
+- 用户更新时，`loginName` 缺席表示不修改，传空串表示解绑当前登录名。
 
 ## 7. `Handler` 与 `CursorStore`
 

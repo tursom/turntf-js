@@ -28,8 +28,10 @@ import {
 } from "./utils";
 import {
   idToString,
+  normalizeLoginName,
   toRequiredWireInteger,
   validateDeliveryMode,
+  validateLoginName,
   validateUserMetadataKey,
   validateUserMetadataScanRequest,
   validateUserRef
@@ -54,21 +56,60 @@ export class HTTPClient {
     }
   }
 
-  async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string> {
-    return this.loginWithPassword(nodeId, userId, await plainPassword(password), options);
+  async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string>;
+  async login(loginName: string, password: string, options?: RequestOptions): Promise<string>;
+  async login(
+    nodeIdOrLoginName: string,
+    userIdOrPassword: string,
+    passwordOrOptions?: string | RequestOptions,
+    maybeOptions?: RequestOptions
+  ): Promise<string> {
+    if (typeof passwordOrOptions === "string") {
+      return this.loginWithPassword(
+        nodeIdOrLoginName,
+        userIdOrPassword,
+        await plainPassword(passwordOrOptions),
+        maybeOptions
+      );
+    }
+    return this.loginWithPassword(
+      nodeIdOrLoginName,
+      await plainPassword(userIdOrPassword),
+      passwordOrOptions
+    );
   }
 
+  async loginWithPassword(nodeId: string, userId: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
+  async loginWithPassword(loginName: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(
-    nodeId: string,
-    userId: string,
-    password: PasswordInput,
-    options?: RequestOptions
+    nodeIdOrLoginName: string,
+    userIdOrPassword: string | PasswordInput,
+    passwordOrOptions?: PasswordInput | RequestOptions,
+    maybeOptions?: RequestOptions
   ): Promise<string> {
-    const response = await this.doJSON("POST", "/auth/login", "", {
-      node_id: toRequiredWireInteger(nodeId, "nodeId"),
-      user_id: toRequiredWireInteger(userId, "userId"),
-      password: passwordWireValue(password)
-    }, [200], options);
+    let body: Record<string, unknown>;
+    let options: RequestOptions | undefined;
+    if (typeof userIdOrPassword === "string") {
+      if (!isPasswordInput(passwordOrOptions)) {
+        throw new Error("password is required");
+      }
+      body = {
+        node_id: toRequiredWireInteger(nodeIdOrLoginName, "nodeId"),
+        user_id: toRequiredWireInteger(userIdOrPassword, "userId"),
+        password: passwordWireValue(passwordOrOptions)
+      };
+      options = maybeOptions;
+    } else {
+      const loginName = normalizeLoginName(nodeIdOrLoginName);
+      validateLoginName(loginName, "loginName");
+      body = {
+        login_name: loginName,
+        password: passwordWireValue(userIdOrPassword)
+      };
+      options = passwordOrOptions as RequestOptions | undefined;
+    }
+
+    const response = await this.doJSON("POST", "/auth/login", "", body, [200], options);
     const token = objectField(response, "token");
     if (typeof token !== "string" || token === "") {
       throw new ProtocolError("empty token in login response");
@@ -87,6 +128,9 @@ export class HTTPClient {
       username: request.username,
       role: request.role
     };
+    if (request.loginName !== undefined) {
+      body.login_name = normalizeLoginName(request.loginName);
+    }
     if (request.password) {
       body.password = passwordWireValue(request.password);
     }
@@ -416,6 +460,7 @@ function userFromHTTP(value: unknown): User {
     nodeId: idToString(objectField(value, "node_id")),
     userId: idToString(objectField(value, "user_id")),
     username: String(objectField(value, "username") ?? ""),
+    loginName: String(objectField(value, "login_name") ?? ""),
     role: String(objectField(value, "role") ?? ""),
     profileJson: profile == null ? new Uint8Array(0) : utf8ToBytes(stringifyJson(profile)),
     systemReserved: Boolean(objectField(value, "system_reserved")),
@@ -449,7 +494,8 @@ function loggedInUserFromHTTP(value: unknown): LoggedInUser {
   return {
     nodeId: idToString(objectField(value, "node_id")),
     userId: idToString(objectField(value, "user_id")),
-    username: String(objectField(value, "username") ?? "")
+    username: String(objectField(value, "username") ?? ""),
+    loginName: String(objectField(value, "login_name") ?? "")
   };
 }
 
@@ -496,4 +542,11 @@ function userMetadataScanResultFromHTTP(value: unknown): UserMetadataScanResult 
     count: typeof count === "number" ? count : items.length,
     nextAfter: String(objectField(value, "next_after") ?? "")
   };
+}
+
+function isPasswordInput(value: unknown): value is PasswordInput {
+  return value != null
+    && typeof value === "object"
+    && "source" in value
+    && "encoded" in value;
 }

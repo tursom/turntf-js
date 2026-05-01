@@ -77,8 +77,11 @@ import type {
 import { abortReason, createDeferred, mergeAbortSignals, sleep, type Deferred } from "./utils";
 import {
   cursorForMessage,
+  isLoginNameCredentials,
+  normalizeLoginName,
   toRequiredWireInteger,
   toWireInteger,
+  validateCredentials,
   validateDeliveryMode,
   validateSessionRef,
   validateUserMetadataKey,
@@ -162,18 +165,25 @@ export class Client {
     if (options.baseUrl.trim() === "") {
       throw new Error("baseUrl is required");
     }
-    validateUserRef(options.credentials, "credentials");
+    validateCredentials(options.credentials, "credentials");
     validatePassword(options.credentials.password);
 
     this.http = new HTTPClient(
       options.baseUrl,
       options.fetch == null ? {} : { fetch: options.fetch }
     );
-    this.credentials = {
-      nodeId: options.credentials.nodeId,
-      userId: options.credentials.userId,
-      password: options.credentials.password
-    };
+    if (isLoginNameCredentials(options.credentials)) {
+      this.credentials = {
+        loginName: normalizeLoginName(options.credentials.loginName),
+        password: options.credentials.password
+      };
+    } else {
+      this.credentials = {
+        nodeId: options.credentials.nodeId,
+        userId: options.credentials.userId,
+        password: options.credentials.password
+      };
+    }
     this.cursorStore = options.cursorStore ?? new MemoryCursorStore();
     this.handler = options.handler ?? new NopHandler();
     this.reconnectEnabled = options.reconnect ?? true;
@@ -197,17 +207,41 @@ export class Client {
     return { ...this.currentSessionRef };
   }
 
-  async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string> {
-    return this.http.login(nodeId, userId, password, options);
+  async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string>;
+  async login(loginName: string, password: string, options?: RequestOptions): Promise<string>;
+  async login(
+    nodeIdOrLoginName: string,
+    userIdOrPassword: string,
+    passwordOrOptions?: string | RequestOptions,
+    maybeOptions?: RequestOptions
+  ): Promise<string> {
+    if (typeof passwordOrOptions === "string") {
+      return this.http.login(nodeIdOrLoginName, userIdOrPassword, passwordOrOptions, maybeOptions);
+    }
+    return this.http.login(nodeIdOrLoginName, userIdOrPassword, passwordOrOptions);
   }
 
+  async loginWithPassword(nodeId: string, userId: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
+  async loginWithPassword(loginName: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(
-    nodeId: string,
-    userId: string,
-    password: PasswordInput,
-    options?: RequestOptions
+    nodeIdOrLoginName: string,
+    userIdOrPassword: string | PasswordInput,
+    passwordOrOptions?: PasswordInput | RequestOptions,
+    maybeOptions?: RequestOptions
   ): Promise<string> {
-    return this.http.loginWithPassword(nodeId, userId, password, options);
+    if (typeof userIdOrPassword === "string") {
+      return this.http.loginWithPassword(
+        nodeIdOrLoginName,
+        userIdOrPassword,
+        passwordOrOptions as PasswordInput,
+        maybeOptions
+      );
+    }
+    return this.http.loginWithPassword(
+      nodeIdOrLoginName,
+      userIdOrPassword,
+      passwordOrOptions as RequestOptions | undefined
+    );
   }
 
   async connect(options?: RequestOptions): Promise<void> {
@@ -370,6 +404,7 @@ export class Client {
           createUser: {
             requestId,
             username: request.username,
+            loginName: request.loginName == null ? "" : normalizeLoginName(request.loginName),
             password: request.password == null ? "" : passwordWireValue(request.password),
             profileJson: request.profileJson == null ? new Uint8Array(0) : new Uint8Array(request.profileJson),
             role: request.role
@@ -429,6 +464,9 @@ export class Client {
         }
         if (request.role != null) {
           updateUser.role = { value: request.role };
+        }
+        if (request.loginName != null) {
+          updateUser.loginName = { value: normalizeLoginName(request.loginName) };
         }
         return {
         body: {
@@ -932,18 +970,24 @@ export class Client {
       const seen = await Promise.resolve(this.cursorStore.loadSeenMessages());
       socket = await this.dial();
       this.connectingSocket = socket;
+      const login = {
+        password: passwordWireValue(this.credentials.password),
+        seenMessages: seen.map(cursorToProto),
+        transientOnly: this.transientOnly,
+        loginName: isLoginNameCredentials(this.credentials) ? normalizeLoginName(this.credentials.loginName) : ""
+      };
+      if (!isLoginNameCredentials(this.credentials)) {
+        Object.assign(login, {
+          user: userRefToProto({
+            nodeId: this.credentials.nodeId,
+            userId: this.credentials.userId
+          })
+        });
+      }
       await this.writeProto(socket, {
         body: {
           oneofKind: "login",
-          login: {
-            user: userRefToProto({
-              nodeId: this.credentials.nodeId,
-              userId: this.credentials.userId
-            }),
-            password: passwordWireValue(this.credentials.password),
-            seenMessages: seen.map(cursorToProto),
-            transientOnly: this.transientOnly
-          }
+          login
         }
       });
 

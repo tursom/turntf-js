@@ -32,6 +32,8 @@ import {
 
   // 类型
   Credentials,
+  UserCredentials,
+  LoginNameCredentials,
   UserRef,
   SessionRef,
   MessageCursor,
@@ -80,6 +82,8 @@ import {
   proto,
   assertDecimalString,
   assertRequiredDecimalString,
+  validateCredentials,
+  validateLoginName,
   validateUserRef,
   validateSessionRef,
   validateDeliveryMode,
@@ -107,7 +111,7 @@ new Client(options: ClientOptions)
 | 字段 | 类型 | 默认值 | 说明 |
 |---|---|---|---|
 | `baseUrl` | `string` | 必填 | 服务端地址，自动处理协议转换 |
-| `credentials` | `Credentials` | 必填 | `{ nodeId: string; userId: string; password: PasswordInput }` |
+| `credentials` | `Credentials` | 必填 | `{ nodeId, userId, password }` 或 `{ loginName, password }`，二选一 |
 | `cursorStore` | `CursorStore` | `MemoryCursorStore` | 消息游标持久化存储 |
 | `handler` | `Handler` | `NopHandler` | 回调接收器 |
 | `fetch` | `typeof fetch` | `globalThis.fetch` | 仅用于内部 HTTPClient |
@@ -243,7 +247,9 @@ interface HTTPClientOptions {
 
 ```ts
 login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string>
+login(loginName: string, password: string, options?: RequestOptions): Promise<string>
 loginWithPassword(nodeId: string, userId: string, password: PasswordInput, options?: RequestOptions): Promise<string>
+loginWithPassword(loginName: string, password: PasswordInput, options?: RequestOptions): Promise<string>
 
 createUser(token: string, request: CreateUserRequest, options?: RequestOptions): Promise<User>
 createChannel(token: string, request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>, options?: RequestOptions): Promise<User>
@@ -334,11 +340,18 @@ interface MessageCursor {
   seq: string;      // 十进制字符串
 }
 
-interface Credentials {
+interface UserCredentials {
   nodeId: string;
   userId: string;
   password: PasswordInput;
 }
+
+interface LoginNameCredentials {
+  loginName: string;
+  password: PasswordInput;
+}
+
+type Credentials = UserCredentials | LoginNameCredentials;
 
 interface RequestOptions {
   signal?: AbortSignal;
@@ -357,6 +370,7 @@ interface User {
   nodeId: string;
   userId: string;
   username: string;
+  loginName: string;
   role: string;               // "user" | "channel" | "admin"
   profileJson: Uint8Array;    // JSON profile 的原始字节
   systemReserved: boolean;
@@ -367,6 +381,7 @@ interface User {
 
 interface CreateUserRequest {
   username: string;
+  loginName?: string;
   password?: PasswordInput;
   profileJson?: Uint8Array;
   role: string;
@@ -374,6 +389,7 @@ interface CreateUserRequest {
 
 interface UpdateUserRequest {
   username?: string;
+  loginName?: string;
   password?: PasswordInput;
   profileJson?: Uint8Array;
   role?: string;
@@ -390,6 +406,8 @@ interface LoginInfo {
   sessionRef: SessionRef;
 }
 ```
+
+- `UpdateUserRequest.loginName` 缺席表示不修改，传空串表示解绑当前登录名。
 
 ### 消息
 
@@ -511,6 +529,7 @@ interface LoggedInUser {
   nodeId: string;          // 十进制字符串
   userId: string;          // 十进制字符串
   username: string;
+  loginName: string;
 }
 ```
 
