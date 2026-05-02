@@ -33,6 +33,7 @@ import {
   utf8ToBytes
 } from "./utils";
 import {
+  assertDecimalString,
   idToString,
   normalizeLoginName,
   toRequiredWireInteger,
@@ -229,19 +230,36 @@ export class HTTPClient {
   /**
    * 获取指定用户的消息列表。
    * 可选参数 limit 控制返回的最大消息数量。
+   * 可选参数 peer 用于指定会话对端用户引用（同时提供 peer.nodeId 和 peer.userId 时生效）。
+   *
+   * 注意：target 的 nodeId/userId 允许为 "0"（作为"当前用户"的 sentinel 值），
+   * 因此此处不使用 validateUserRef（它会拒绝 "0"）。
    *
    * @param token - 认证令牌
    * @param target - 目标用户引用
    * @param limit - 返回消息的最大数量，0 表示不限制
+   * @param peer - 可选的会话对端用户引用
    * @param options - 可选请求选项
    * @returns 消息对象数组
    */
-  async listMessages(token: string, target: UserRef, limit = 0, options?: RequestOptions): Promise<Message[]> {
-    validateUserRef(target, "target");
-    const query = limit > 0 ? `?limit=${encodeURIComponent(String(limit))}` : "";
+  async listMessages(token: string, target: UserRef, limit = 0, peer?: UserRef, options?: RequestOptions): Promise<Message[]> {
+    // 宽松验证：允许 "0" 作为 sentinel（当前用户）
+    assertDecimalString(target.nodeId, "target.nodeId");
+    assertDecimalString(target.userId, "target.userId");
+    const query = new URLSearchParams();
+    if (limit > 0) {
+      query.set("limit", String(limit));
+    }
+    if (peer != null) {
+      assertDecimalString(peer.nodeId, "peer.nodeId");
+      assertDecimalString(peer.userId, "peer.userId");
+      query.set("peer_node_id", peer.nodeId);
+      query.set("peer_user_id", peer.userId);
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
     const response = await this.doJSON(
       "GET",
-      `/nodes/${target.nodeId}/users/${target.userId}/messages${query}`,
+      `/nodes/${target.nodeId}/users/${target.userId}/messages${suffix}`,
       token,
       undefined,
       [200],
