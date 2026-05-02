@@ -12,6 +12,7 @@ export * from "./errors";
 export * from "./http";
 export * from "./mapping";
 export * from "./password";
+export * from "./relay";
 export * from "./store";
 export * from "./types";
 export * from "./utils";

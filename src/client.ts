@@ -88,6 +88,7 @@ import {
   validateUserMetadataScanRequest,
   validateUserRef
 } from "./validation";
+import { Relay } from "./relay";
 
 /**
  * 事件处理器接口，定义客户端生命周期事件的回调方法。
@@ -206,6 +207,7 @@ export class Client {
   private connected = false;
   private closed = false;
   private stopReconnect = false;
+  private _relay: Relay | undefined;
 
   /**
    * 创建 WebSocket 客户端实例。
@@ -265,6 +267,17 @@ export class Client {
       return undefined;
     }
     return { ...this.currentSessionRef };
+  }
+
+  /**
+   * 获取关联的 Relay 管理器（懒初始化）。
+   * Relay 管理器提供点对点连接功能，支持三种可靠性模式。
+   */
+  relay(): Relay {
+    if (this._relay == null) {
+      this._relay = new Relay(this);
+    }
+    return this._relay;
   }
 
   /**
@@ -1470,9 +1483,14 @@ export class Client {
         await this.persistAndDispatchMessage(message);
         return;
       }
-      case "packetPushed":
-        await this.safeHandlerCall(this.handler.onPacket, packetFromProto(env.body.packetPushed.packet));
+      case "packetPushed": {
+        const packet = packetFromProto(env.body.packetPushed.packet);
+        if (this._relay != null && this._relay.handlePacket(packet)) {
+          return;
+        }
+        await this.safeHandlerCall(this.handler.onPacket, packet);
         return;
+      }
       case "sendMessageResponse":
         await this.handleSendMessageResponse(env.body.sendMessageResponse);
         return;
