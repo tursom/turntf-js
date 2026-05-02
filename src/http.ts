@@ -37,14 +37,31 @@ import {
   validateUserRef
 } from "./validation";
 
+/**
+ * HTTP 客户端选项。
+ */
 export interface HTTPClientOptions {
+  /** 自定义 fetch 函数，用于替换全局 fetch，适用于测试或特定运行时环境 */
   fetch?: typeof fetch;
 }
 
+/**
+ * HTTP 客户端，提供基于 REST API 的 HTTP 请求封装。
+ * 所有 API 方法都返回 Promise，支持通过 RequestOptions 设置超时和取消。
+ * 与 WebSocket 客户端（Client）不同，HTTP 客户端提供无状态的 RESTful API 调用。
+ */
 export class HTTPClient {
+  /** 基础 URL（已去除尾部斜杠） */
   readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
 
+  /**
+   * 创建 HTTPClient 实例。
+   *
+   * @param baseUrl - 服务器基础 URL，例如 "http://localhost:8080"
+   * @param options - 可选配置
+   * @throws 如果 baseUrl 为空或 fetch 不可用则抛出错误
+   */
   constructor(baseUrl: string, options: HTTPClientOptions = {}) {
     if (baseUrl.trim() === "") {
       throw new Error("baseUrl is required");
@@ -56,6 +73,20 @@ export class HTTPClient {
     }
   }
 
+  /**
+   * 使用明文密码登录（异步密码处理）。
+   * 支持两种登录方式：
+   * 1. 通过 (nodeId, userId, password) 登录
+   * 2. 通过 (loginName, password) 登录
+   *
+   * @param nodeIdOrLoginName - 节点 ID 或登录名
+   * @param userIdOrPassword - 用户 ID 或密码
+   * @param passwordOrOptions - 密码或请求选项
+   * @param maybeOptions - 请求选项（当使用 nodeId/userId 方式时）
+   * @returns 返回认证令牌（token）字符串
+   * @throws {ConnectionError} 网络连接失败时抛出
+   * @throws {ProtocolError} 服务器返回异常时抛出
+   */
   async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string>;
   async login(loginName: string, password: string, options?: RequestOptions): Promise<string>;
   async login(
@@ -79,6 +110,20 @@ export class HTTPClient {
     );
   }
 
+  /**
+   * 使用 PasswordInput 对象登录（密码已由调用方处理）。
+   * 支持两种登录方式：
+   * 1. 通过 (nodeId, userId, password) 登录
+   * 2. 通过 (loginName, password) 登录
+   *
+   * @param nodeIdOrLoginName - 节点 ID 或登录名
+   * @param userIdOrPassword - 用户 ID 或 PasswordInput
+   * @param passwordOrOptions - PasswordInput 或请求选项
+   * @param maybeOptions - 请求选项（当使用 nodeId/userId 方式时）
+   * @returns 返回认证令牌（token）字符串
+   * @throws {ConnectionError} 网络连接失败时抛出
+   * @throws {ProtocolError} 服务器返回异常或 token 为空时抛出
+   */
   async loginWithPassword(nodeId: string, userId: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(loginName: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(
@@ -117,6 +162,15 @@ export class HTTPClient {
     return token;
   }
 
+  /**
+   * 创建新用户。
+   *
+   * @param token - 认证令牌
+   * @param request - 创建用户请求参数
+   * @param options - 可选请求选项
+   * @returns 创建的用户信息
+   * @throws 如果用户名或角色为空则抛出错误
+   */
   async createUser(token: string, request: CreateUserRequest, options?: RequestOptions): Promise<User> {
     if (request.username === "") {
       throw new Error("username is required");
@@ -141,14 +195,41 @@ export class HTTPClient {
     return userFromHTTP(response);
   }
 
+  /**
+   * 创建频道（Channel）。
+   * 实质是创建角色为 "channel" 的特殊用户。
+   *
+   * @param token - 认证令牌
+   * @param request - 创建频道请求（自动设置 role 为 "channel"）
+   * @param options - 可选请求选项
+   * @returns 创建的频道用户信息
+   */
   createChannel(token: string, request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>, options?: RequestOptions): Promise<User> {
     return this.createUser(token, { ...request, role: request.role ?? "channel" }, options);
   }
 
+  /**
+   * 创建用户对频道的订阅关系。
+   *
+   * @param token - 认证令牌
+   * @param user - 订阅者引用
+   * @param channel - 频道引用
+   * @param options - 可选请求选项
+   */
   async createSubscription(token: string, user: UserRef, channel: UserRef, options?: RequestOptions): Promise<void> {
     await this.upsertAttachment(token, user, channel, AttachmentType.ChannelSubscription, new Uint8Array(), options);
   }
 
+  /**
+   * 获取指定用户的消息列表。
+   * 可选参数 limit 控制返回的最大消息数量。
+   *
+   * @param token - 认证令牌
+   * @param target - 目标用户引用
+   * @param limit - 返回消息的最大数量，0 表示不限制
+   * @param options - 可选请求选项
+   * @returns 消息对象数组
+   */
   async listMessages(token: string, target: UserRef, limit = 0, options?: RequestOptions): Promise<Message[]> {
     validateUserRef(target, "target");
     const query = limit > 0 ? `?limit=${encodeURIComponent(String(limit))}` : "";
@@ -164,6 +245,17 @@ export class HTTPClient {
     return items.map(messageFromHTTP);
   }
 
+  /**
+   * 向目标用户发送持久化消息。
+   * 消息会被存储在服务器上，接收方可以后续拉取。
+   *
+   * @param token - 认证令牌
+   * @param target - 目标用户引用
+   * @param body - 消息体（字节数组），不能为空
+   * @param options - 可选请求选项
+   * @returns 发送的消息对象
+   * @throws 如果消息体为空则抛出错误
+   */
   async postMessage(token: string, target: UserRef, body: Uint8Array, options?: RequestOptions): Promise<Message> {
     validateUserRef(target, "target");
     if (body.length === 0) {
@@ -180,6 +272,18 @@ export class HTTPClient {
     return messageFromHTTP(response);
   }
 
+  /**
+   * 向目标节点发送瞬态数据包（Packet）。
+   * 数据包不会被持久化存储，投递模式决定是否进行重试。
+   *
+   * @param token - 认证令牌
+   * @param targetNodeId - 目标节点 ID
+   * @param relayTarget - 中转目标用户引用
+   * @param body - 数据包体（字节数组），不能为空
+   * @param mode - 投递模式（BestEffort 或 RouteRetry）
+   * @param options - 可选请求选项
+   * @throws 如果节点 ID 与用户节点 ID 不匹配、消息体为空或投递模式无效则抛出错误
+   */
   async postPacket(
     token: string,
     targetNodeId: string,
@@ -211,6 +315,13 @@ export class HTTPClient {
     );
   }
 
+  /**
+   * 获取集群中所有节点的信息列表。
+   *
+   * @param token - 认证令牌
+   * @param options - 可选请求选项
+   * @returns 集群节点信息数组
+   */
   async listClusterNodes(token: string, options?: RequestOptions): Promise<ClusterNode[]> {
     const response = await this.doJSON("GET", "/cluster/nodes", token, undefined, [200], options);
     const items = Array.isArray(response) ? response : (Array.isArray(objectField(response, "nodes"))
@@ -219,6 +330,14 @@ export class HTTPClient {
     return items.map(clusterNodeFromHTTP);
   }
 
+  /**
+   * 获取指定集群节点上当前已登录的用户列表。
+   *
+   * @param token - 认证令牌
+   * @param nodeId - 集群节点 ID
+   * @param options - 可选请求选项
+   * @returns 已登录用户信息数组
+   */
   async listNodeLoggedInUsers(token: string, nodeId: string, options?: RequestOptions): Promise<LoggedInUser[]> {
     toRequiredWireInteger(nodeId, "nodeId");
     const response = await this.doJSON("GET", `/cluster/nodes/${nodeId}/logged-in-users`, token, undefined, [200], options);
@@ -226,21 +345,56 @@ export class HTTPClient {
     return items.map(loggedInUserFromHTTP);
   }
 
+  /**
+   * 将用户加入黑名单。
+   *
+   * @param token - 认证令牌
+   * @param owner - 黑名单所有者引用
+   * @param blocked - 被屏蔽的用户引用
+   * @param options - 可选请求选项
+   * @returns 黑名单条目
+   */
   async blockUser(token: string, owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
     const attachment = await this.upsertAttachment(token, owner, blocked, AttachmentType.UserBlacklist, new Uint8Array(), options);
     return blacklistEntryFromHTTP(attachment);
   }
 
+  /**
+   * 将用户从黑名单中移除（解除屏蔽）。
+   *
+   * @param token - 认证令牌
+   * @param owner - 黑名单所有者引用
+   * @param blocked - 被解除屏蔽的用户引用
+   * @param options - 可选请求选项
+   * @returns 黑名单条目（包含删除时间）
+   */
   async unblockUser(token: string, owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
     const attachment = await this.deleteAttachment(token, owner, blocked, AttachmentType.UserBlacklist, options);
     return blacklistEntryFromHTTP(attachment);
   }
 
+  /**
+   * 获取指定用户的黑名单列表。
+   *
+   * @param token - 认证令牌
+   * @param owner - 黑名单所有者引用
+   * @param options - 可选请求选项
+   * @returns 黑名单条目数组
+   */
   async listBlockedUsers(token: string, owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
     const items = await this.listAttachments(token, owner, AttachmentType.UserBlacklist, options);
     return items.map(blacklistEntryFromHTTP);
   }
 
+  /**
+   * 获取指定用户的元数据。
+   *
+   * @param token - 认证令牌
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param options - 可选请求选项
+   * @returns 用户元数据对象
+   */
   async getUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
@@ -255,6 +409,18 @@ export class HTTPClient {
     return userMetadataFromHTTP(response);
   }
 
+  /**
+   * 创建或更新用户元数据。
+   * 如果键名已存在则更新，不存在则创建。
+   * 支持设置过期时间，过期后元数据自动删除。
+   *
+   * @param token - 认证令牌
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param request - 元数据内容（值和过期时间）
+   * @param options - 可选请求选项
+   * @returns 更新后的用户元数据对象
+   */
   async upsertUserMetadata(
     token: string,
     owner: UserRef,
@@ -284,6 +450,15 @@ export class HTTPClient {
     return userMetadataFromHTTP(response);
   }
 
+  /**
+   * 删除指定用户元数据。
+   *
+   * @param token - 认证令牌
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param options - 可选请求选项
+   * @returns 被删除的用户元数据对象（包含删除时间）
+   */
   async deleteUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
@@ -298,6 +473,15 @@ export class HTTPClient {
     return userMetadataFromHTTP(response);
   }
 
+  /**
+   * 扫描用户元数据，支持按前缀过滤和分页。
+   *
+   * @param token - 认证令牌
+   * @param owner - 元数据所有者引用
+   * @param request - 扫描请求参数（前缀、分页游标、数量限制）
+   * @param options - 可选请求选项
+   * @returns 元数据扫描结果（包含匹配项列表和下一页游标）
+   */
   async scanUserMetadata(
     token: string,
     owner: UserRef,
@@ -328,6 +512,18 @@ export class HTTPClient {
     return userMetadataScanResultFromHTTP(response);
   }
 
+  /**
+   * 创建或更新附件关系。
+   * 用于管理频道管理员、频道写入者、频道订阅和用户黑名单等关联关系。
+   *
+   * @param token - 认证令牌
+   * @param owner - 附件所有者引用
+   * @param subject - 附件主体引用
+   * @param attachmentType - 附件类型
+   * @param configJson - 配置信息的 JSON 字节数组
+   * @param options - 可选请求选项
+   * @returns 附件对象
+   */
   async upsertAttachment(
     token: string,
     owner: UserRef,
@@ -351,6 +547,16 @@ export class HTTPClient {
     return attachmentFromHTTP(response);
   }
 
+  /**
+   * 删除附件关系。
+   *
+   * @param token - 认证令牌
+   * @param owner - 附件所有者引用
+   * @param subject - 附件主体引用
+   * @param attachmentType - 附件类型
+   * @param options - 可选请求选项
+   * @returns 被删除的附件对象（包含删除时间）
+   */
   async deleteAttachment(
     token: string,
     owner: UserRef,
@@ -371,6 +577,16 @@ export class HTTPClient {
     return attachmentFromHTTP(response);
   }
 
+  /**
+   * 获取指定用户的附件列表。
+   * 可选参数 attachmentType 用于按类型过滤附件。
+   *
+   * @param token - 认证令牌
+   * @param owner - 附件所有者引用
+   * @param attachmentType - 可选的附件类型过滤
+   * @param options - 可选请求选项
+   * @returns 附件对象数组
+   */
   async listAttachments(token: string, owner: UserRef, attachmentType?: AttachmentType, options?: RequestOptions): Promise<Attachment[]> {
     validateUserRef(owner, "owner");
     const query = attachmentType ? `?attachment_type=${encodeURIComponent(attachmentType)}` : "";

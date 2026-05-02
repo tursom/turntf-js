@@ -89,14 +89,29 @@ import {
   validateUserRef
 } from "./validation";
 
+/**
+ * 事件处理器接口，定义客户端生命周期事件的回调方法。
+ * 所有方法都支持同步和异步两种形式。
+ * 方法内部的异常会被客户端捕获并安全处理，不会影响客户端的正常运行。
+ */
 export interface Handler {
+  /** 登录成功后的回调，提供登录信息（用户信息、协议版本、会话引用） */
   onLogin(info: LoginInfo): void | Promise<void>;
+  /** 收到新的持久化消息时的回调 */
   onMessage(message: Message): void | Promise<void>;
+  /** 收到新的瞬态数据包时的回调 */
   onPacket(packet: Packet): void | Promise<void>;
+  /** 发生错误时的回调 */
   onError(error: unknown): void | Promise<void>;
+  /** 连接断开时的回调，提供断开原因 */
   onDisconnect(error: unknown): void | Promise<void>;
 }
 
+/**
+ * 空操作（NOP）事件处理器，所有回调方法均为空实现。
+ * 作为 Handler 接口的默认实现，避免空值检查。
+ * 继承此类并重写需要的方法即可实现自定义处理器。
+ */
 export class NopHandler implements Handler {
   onLogin(_info: LoginInfo): void {}
   onMessage(_message: Message): void {}
@@ -105,19 +120,35 @@ export class NopHandler implements Handler {
   onDisconnect(_error: unknown): void {}
 }
 
+/**
+ * WebSocket 客户端选项。
+ */
 export interface ClientOptions {
+  /** 服务器基础 URL，例如 "http://localhost:8080" */
   baseUrl: string;
+  /** 登录凭据，支持 (nodeId, userId) 或 loginName 两种方式 */
   credentials: Credentials;
+  /** 消息游标存储器，用于消息去重。默认为 MemoryCursorStore */
   cursorStore?: CursorStore;
+  /** 事件处理器，处理登录、消息、错误等回调 */
   handler?: Handler;
+  /** 自定义 fetch 函数，用于替换全局 fetch */
   fetch?: typeof fetch;
+  /** 是否启用自动重连，默认为 true */
   reconnect?: boolean;
+  /** 初始重连延迟（毫秒），默认为 1000ms */
   initialReconnectDelayMs?: number;
+  /** 最大重连延迟（毫秒），默认为 30000ms */
   maxReconnectDelayMs?: number;
+  /** WebSocket 心跳 ping 的间隔（毫秒），默认为 30000ms */
   pingIntervalMs?: number;
+  /** RPC 请求超时时间（毫秒），默认为 10000ms */
   requestTimeoutMs?: number;
+  /** 是否自动回复消息确认（ACK），默认为 true */
   ackMessages?: boolean;
+  /** 是否仅接收瞬态消息，默认为 false */
   transientOnly?: boolean;
+  /** 是否使用实时流模式连接，默认为 false */
   realtimeStream?: boolean;
 }
 
@@ -131,7 +162,22 @@ interface Frame {
   readonly isBinary: boolean;
 }
 
+/**
+ * turntf WebSocket 客户端，提供基于 WebSocket 协议的双向通信能力。
+ * 支持消息的持久化投递和瞬态投递、自动重连、消息去重、频道订阅等特性。
+ * 客户端通过 WebSocket 与服务器建立长连接，支持心跳保活和自动重连。
+ *
+ * 使用示例：
+ * ```ts
+ * const client = new Client({
+ *   baseUrl: "http://localhost:8080",
+ *   credentials: { loginName: "user", password: await plainPassword("pass") }
+ * });
+ * await client.connect();
+ * ```
+ */
 export class Client {
+  /** HTTP 客户端实例，用于 REST API 调用 */
   readonly http: HTTPClient;
 
   private readonly credentials: Credentials;
@@ -161,6 +207,14 @@ export class Client {
   private closed = false;
   private stopReconnect = false;
 
+  /**
+   * 创建 WebSocket 客户端实例。
+   * 创建后需要调用 connect() 方法建立 WebSocket 连接。
+   * 客户端默认启用自动重连，可通过 reconnect 选项关闭。
+   *
+   * @param options - 客户端配置选项
+   * @throws 如果 baseUrl 为空、凭据不合法或密码无效则抛出错误
+   */
   constructor(options: ClientOptions) {
     if (options.baseUrl.trim() === "") {
       throw new Error("baseUrl is required");
@@ -196,10 +250,16 @@ export class Client {
     this.realtimeStream = options.realtimeStream ?? false;
   }
 
+  /** 获取服务器基础 URL */
   get baseUrl(): string {
     return this.http.baseUrl;
   }
 
+  /**
+   * 获取当前会话引用。
+   * 返回当前连接建立的会话引用副本，包含服务节点 ID 和会话 ID。
+   * 如果尚未连接或已断开，返回 undefined。
+   */
   get sessionRef(): SessionRef | undefined {
     if (this.currentSessionRef == null) {
       return undefined;
@@ -207,6 +267,19 @@ export class Client {
     return { ...this.currentSessionRef };
   }
 
+  /**
+   * 使用明文密码进行 HTTP 登录（便捷方法，自动处理密码哈希）。
+   * 委托给 HTTPClient 的同名方法。
+   * 支持两种登录方式：
+   * 1. 通过 (nodeId, userId, password) 登录
+   * 2. 通过 (loginName, password) 登录
+   *
+   * @param nodeIdOrLoginName - 节点 ID 或登录名
+   * @param userIdOrPassword - 用户 ID 或密码
+   * @param passwordOrOptions - 密码或请求选项
+   * @param maybeOptions - 请求选项（当使用 nodeId/userId 方式时）
+   * @returns 认证令牌字符串
+   */
   async login(nodeId: string, userId: string, password: string, options?: RequestOptions): Promise<string>;
   async login(loginName: string, password: string, options?: RequestOptions): Promise<string>;
   async login(
@@ -221,6 +294,19 @@ export class Client {
     return this.http.login(nodeIdOrLoginName, userIdOrPassword, passwordOrOptions);
   }
 
+  /**
+   * 使用 PasswordInput 对象进行 HTTP 登录。
+   * 委托给 HTTPClient 的同名方法。
+   * 支持两种登录方式：
+   * 1. 通过 (nodeId, userId, password) 登录
+   * 2. 通过 (loginName, password) 登录
+   *
+   * @param nodeIdOrLoginName - 节点 ID 或登录名
+   * @param userIdOrPassword - 用户 ID 或 PasswordInput
+   * @param passwordOrOptions - PasswordInput 或请求选项
+   * @param maybeOptions - 请求选项（当使用 nodeId/userId 方式时）
+   * @returns 认证令牌字符串
+   */
   async loginWithPassword(nodeId: string, userId: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(loginName: string, password: PasswordInput, options?: RequestOptions): Promise<string>;
   async loginWithPassword(
@@ -244,6 +330,16 @@ export class Client {
     );
   }
 
+  /**
+   * 建立 WebSocket 连接。
+   * 如果客户端已连接，则直接返回。
+   * 如果客户端已关闭，则抛出 ClosedError。
+   * 连接成功后，会触发 handler.onLogin 回调。
+   * 连接断开后会自动重连（如果启用了重连选项）。
+   *
+   * @param options - 可选的请求选项，支持超时和取消
+   * @throws {ClosedError} 如果客户端已关闭
+   */
   async connect(options?: RequestOptions): Promise<void> {
     if (this.closed) {
       throw new ClosedError();
@@ -263,6 +359,12 @@ export class Client {
     }
   }
 
+  /**
+   * 优雅关闭客户端连接。
+   * 关闭 WebSocket 连接、取消所有待处理的 RPC 请求、停止重连。
+   * 等待所有内部任务完成后返回。
+   * 多次调用 close 是安全的。
+   */
   async close(): Promise<void> {
     if (this.closed) {
       await this.awaitRunTask();
@@ -291,6 +393,14 @@ export class Client {
     await this.awaitRunTask();
   }
 
+  /**
+   * 发送心跳 ping 请求，用于检测 WebSocket 连接是否正常。
+   * 如果连接已断开，会抛出 NotConnectedError。
+   * 客户端内部会自动定时发送心跳，通常不需要手动调用。
+   *
+   * @param options - 可选的请求选项
+   * @throws {NotConnectedError} 如果未连接
+   */
   async ping(options?: RequestOptions): Promise<void> {
     await this.rpc(
       (requestId) => ({
@@ -303,6 +413,18 @@ export class Client {
     );
   }
 
+  /**
+   * 向目标用户发送持久化消息。
+   * 消息会被持久化存储在服务器上，目标用户可以通过拉取或推送方式接收。
+   * 消息会经过游标存储去重处理。
+   *
+   * @param target - 目标用户引用
+   * @param body - 消息体（字节数组），不能为空
+   * @param options - 可选的请求选项
+   * @returns 发送的消息对象
+   * @throws {NotConnectedError} 如果未连接
+   * @throws {ClosedError} 如果客户端已关闭
+   */
   async sendMessage(target: UserRef, body: Uint8Array, options?: RequestOptions): Promise<Message> {
     validateUserRef(target, "target");
     if (body.length === 0) {
@@ -331,10 +453,31 @@ export class Client {
     return result;
   }
 
+  /**
+   * 发送持久化消息（sendMessage 的别名方法）。
+   *
+   * @param target - 目标用户引用
+   * @param body - 消息体（字节数组）
+   * @param options - 可选的请求选项
+   * @returns 发送的消息对象
+   */
   postMessage(target: UserRef, body: Uint8Array, options?: RequestOptions): Promise<Message> {
     return this.sendMessage(target, body, options);
   }
 
+  /**
+   * 向目标用户发送瞬态数据包（Packet）。
+   * 与 sendMessage 不同，数据包不会被持久化存储。
+   * 支持指定投递模式（BestEffort 或 RouteRetry）和目标会话。
+   * 服务器返回 RelayAccepted 仅表示已接受中转，不代表已送达。
+   *
+   * @param target - 目标用户引用
+   * @param body - 数据包体（字节数组），不能为空
+   * @param deliveryMode - 投递模式
+   * @param options - 可选的发送选项（可指定目标会话）
+   * @returns 中转确认对象
+   * @throws {NotConnectedError} 如果未连接
+   */
   async sendPacket(
     target: UserRef,
     body: Uint8Array,
@@ -380,6 +523,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 发送瞬态数据包（sendPacket 的别名方法）。
+   *
+   * @param target - 目标用户引用
+   * @param body - 数据包体（字节数组）
+   * @param deliveryMode - 投递模式
+   * @param options - 可选的发送选项
+   * @returns 中转确认对象
+   */
   postPacket(
     target: UserRef,
     body: Uint8Array,
@@ -389,6 +541,14 @@ export class Client {
     return this.sendPacket(target, body, deliveryMode, options);
   }
 
+  /**
+   * 创建新用户。
+   *
+   * @param request - 创建用户请求（用户名、登录名、密码、角色等）
+   * @param options - 可选的请求选项
+   * @returns 创建的用户信息
+   * @throws 如果用户名或角色为空则抛出错误
+   */
   async createUser(request: CreateUserRequest, options?: RequestOptions): Promise<User> {
     if (request.username === "") {
       throw new Error("username is required");
@@ -419,6 +579,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 创建频道（Channel）。
+   * 频道是一种特殊类型的用户（角色为 "channel"）。
+   * 支持频道订阅、频道管理等社交功能。
+   *
+   * @param request - 创建频道请求（自动设置角色为 "channel"）
+   * @param options - 可选的请求选项
+   * @returns 创建的频道用户信息
+   */
   createChannel(
     request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>,
     options?: RequestOptions
@@ -426,6 +595,13 @@ export class Client {
     return this.createUser({ ...request, role: request.role ?? "channel" }, options);
   }
 
+  /**
+   * 获取用户信息。
+   *
+   * @param target - 目标用户引用
+   * @param options - 可选的请求选项
+   * @returns 用户信息
+   */
   async getUser(target: UserRef, options?: RequestOptions): Promise<User> {
     validateUserRef(target, "target");
 
@@ -444,6 +620,16 @@ export class Client {
     return result;
   }
 
+  /**
+   * 更新用户信息。
+   * 所有字段均为可选，只更新提供的字段。
+   * 支持更新用户名、登录名、密码、配置文件和角色。
+   *
+   * @param target - 目标用户引用
+   * @param request - 更新请求（所有字段可选）
+   * @param options - 可选的请求选项
+   * @returns 更新后的用户信息
+   */
   async updateUser(target: UserRef, request: UpdateUserRequest, options?: RequestOptions): Promise<User> {
     validateUserRef(target, "target");
 
@@ -483,6 +669,14 @@ export class Client {
     return result;
   }
 
+  /**
+   * 删除用户。
+   * 删除操作不可逆，请谨慎使用。
+   *
+   * @param target - 目标用户引用
+   * @param options - 可选的请求选项
+   * @returns 删除结果（包含操作状态和被删除用户的引用）
+   */
   async deleteUser(target: UserRef, options?: RequestOptions): Promise<DeleteUserResult> {
     validateUserRef(target, "target");
 
@@ -501,6 +695,14 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取指定用户的元数据。
+   *
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param options - 可选的请求选项
+   * @returns 用户元数据对象
+   */
   async getUserMetadata(owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
@@ -524,6 +726,17 @@ export class Client {
     return result;
   }
 
+  /**
+   * 创建或更新用户元数据。
+   * 如果键名已存在则更新，不存在则创建。
+   * 支持设置过期时间，过期后元数据自动删除。
+   *
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param request - 元数据内容（值和可选的过期时间）
+   * @param options - 可选的请求选项
+   * @returns 更新后的用户元数据对象
+   */
   async upsertUserMetadata(
     owner: UserRef,
     key: string,
@@ -562,6 +775,14 @@ export class Client {
     return result;
   }
 
+  /**
+   * 删除指定用户元数据。
+   *
+   * @param owner - 元数据所有者引用
+   * @param key - 元数据键名
+   * @param options - 可选的请求选项
+   * @returns 被删除的用户元数据对象（包含删除时间）
+   */
   async deleteUserMetadata(owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
@@ -585,6 +806,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 扫描用户元数据，支持按前缀过滤和分页。
+   * after 参数必须使用与 prefix 相同的前缀。
+   *
+   * @param owner - 元数据所有者引用
+   * @param request - 扫描请求参数（前缀、分页游标、数量限制）
+   * @param options - 可选的请求选项
+   * @returns 元数据扫描结果（包含匹配项列表和下一页游标）
+   */
   async scanUserMetadata(
     owner: UserRef,
     request: ScanUserMetadataRequest = {},
@@ -614,6 +844,17 @@ export class Client {
     return result;
   }
 
+  /**
+   * 创建或更新附件关系。
+   * 用于管理频道管理员、频道写入者、频道订阅和用户黑名单等关联关系。
+   *
+   * @param owner - 附件所有者引用
+   * @param subject - 附件主体引用
+   * @param attachmentType - 附件类型
+   * @param configJson - 配置信息的 JSON 字节数组
+   * @param options - 可选的请求选项
+   * @returns 附件对象
+   */
   async upsertAttachment(owner: UserRef, subject: UserRef, attachmentType: AttachmentType, configJson = new Uint8Array(), options?: RequestOptions): Promise<Attachment> {
     validateUserRef(owner, "owner");
     validateUserRef(subject, "subject");
@@ -638,6 +879,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 删除附件关系。
+   *
+   * @param owner - 附件所有者引用
+   * @param subject - 附件主体引用
+   * @param attachmentType - 附件类型
+   * @param options - 可选的请求选项
+   * @returns 被删除的附件对象（包含删除时间）
+   */
   async deleteAttachment(owner: UserRef, subject: UserRef, attachmentType: AttachmentType, options?: RequestOptions): Promise<Attachment> {
     validateUserRef(owner, "owner");
     validateUserRef(subject, "subject");
@@ -661,6 +911,14 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取附件列表，可选按附件类型过滤。
+   *
+   * @param owner - 附件所有者引用
+   * @param attachmentType - 可选的附件类型过滤
+   * @param options - 可选的请求选项
+   * @returns 附件对象数组
+   */
   async listAttachments(owner: UserRef, attachmentType?: AttachmentType, options?: RequestOptions): Promise<Attachment[]> {
     validateUserRef(owner, "owner");
     const result = await this.rpc(
@@ -682,6 +940,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 订阅频道。
+   * 让 subscriber 用户订阅 channel 频道，之后可以通过频道功能发送和接收消息。
+   *
+   * @param subscriber - 订阅者引用
+   * @param channel - 频道引用
+   * @param options - 可选的请求选项
+   * @returns 订阅对象
+   */
   async subscribeChannel(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
     const attachment = await this.upsertAttachment(subscriber, channel, "channel_subscription", new Uint8Array(), options);
     return {
@@ -693,10 +960,26 @@ export class Client {
     };
   }
 
+  /**
+   * 创建频道订阅（subscribeChannel 的别名方法）。
+   *
+   * @param subscriber - 订阅者引用
+   * @param channel - 频道引用
+   * @param options - 可选的请求选项
+   * @returns 订阅对象
+   */
   createSubscription(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
     return this.subscribeChannel(subscriber, channel, options);
   }
 
+  /**
+   * 取消订阅频道。
+   *
+   * @param subscriber - 订阅者引用
+   * @param channel - 频道引用
+   * @param options - 可选的请求选项
+   * @returns 取消订阅的对象（包含删除时间）
+   */
   async unsubscribeChannel(subscriber: UserRef, channel: UserRef, options?: RequestOptions): Promise<Subscription> {
     const attachment = await this.deleteAttachment(subscriber, channel, "channel_subscription", options);
     return {
@@ -708,6 +991,13 @@ export class Client {
     };
   }
 
+  /**
+   * 获取指定用户订阅的频道列表。
+   *
+   * @param subscriber - 订阅者引用
+   * @param options - 可选的请求选项
+   * @returns 订阅对象数组
+   */
   async listSubscriptions(subscriber: UserRef, options?: RequestOptions): Promise<Subscription[]> {
     const items = await this.listAttachments(subscriber, "channel_subscription", options);
     return items.map((attachment) => ({
@@ -719,6 +1009,15 @@ export class Client {
     }));
   }
 
+  /**
+   * 将用户加入黑名单。
+   * 被屏蔽的用户将无法与所有者进行通信。
+   *
+   * @param owner - 黑名单所有者引用
+   * @param blocked - 被屏蔽的用户引用
+   * @param options - 可选的请求选项
+   * @returns 黑名单条目
+   */
   async blockUser(owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
     const attachment = await this.upsertAttachment(owner, blocked, "user_blacklist", new Uint8Array(), options);
     return {
@@ -730,6 +1029,14 @@ export class Client {
     };
   }
 
+  /**
+   * 将用户从黑名单移除（解除屏蔽）。
+   *
+   * @param owner - 黑名单所有者引用
+   * @param blocked - 被解除屏蔽的用户引用
+   * @param options - 可选的请求选项
+   * @returns 黑名单条目（包含删除时间）
+   */
   async unblockUser(owner: UserRef, blocked: UserRef, options?: RequestOptions): Promise<BlacklistEntry> {
     const attachment = await this.deleteAttachment(owner, blocked, "user_blacklist", options);
     return {
@@ -741,6 +1048,13 @@ export class Client {
     };
   }
 
+  /**
+   * 获取指定用户的黑名单列表。
+   *
+   * @param owner - 黑名单所有者引用
+   * @param options - 可选的请求选项
+   * @returns 黑名单条目数组
+   */
   async listBlockedUsers(owner: UserRef, options?: RequestOptions): Promise<BlacklistEntry[]> {
     const items = await this.listAttachments(owner, "user_blacklist", options);
     return items.map((attachment) => ({
@@ -752,6 +1066,14 @@ export class Client {
     }));
   }
 
+  /**
+   * 获取指定用户的消息列表。
+   *
+   * @param target - 目标用户引用
+   * @param limit - 返回消息的最大数量，0 表示不限制
+   * @param options - 可选的请求选项
+   * @returns 消息对象数组
+   */
   async listMessages(target: UserRef, limit = 0, options?: RequestOptions): Promise<Message[]> {
     validateUserRef(target, "target");
     validateLimit(limit, "limit");
@@ -775,6 +1097,15 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取事件列表，支持按起始序列号和数量限制。
+   * 事件是系统内部的状态变更记录，用于事件溯源和集群同步。
+   *
+   * @param after - 起始事件序列号，默认为 "0"（从开始获取）
+   * @param limit - 最大返回数量，0 表示不限制
+   * @param options - 可选的请求选项
+   * @returns 事件对象数组
+   */
   async listEvents(after = "0", limit = 0, options?: RequestOptions): Promise<Event[]> {
     toWireInteger(after, "after");
     validateLimit(limit, "limit");
@@ -798,6 +1129,12 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取集群中所有节点的信息列表。
+   *
+   * @param options - 可选的请求选项
+   * @returns 集群节点信息数组
+   */
   async listClusterNodes(options?: RequestOptions): Promise<ClusterNode[]> {
     const result = await this.rpc(
       (requestId) => ({
@@ -814,6 +1151,13 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取指定集群节点上当前已登录的用户列表。
+   *
+   * @param nodeId - 集群节点 ID
+   * @param options - 可选的请求选项
+   * @returns 已登录用户信息数组
+   */
   async listNodeLoggedInUsers(nodeId: string, options?: RequestOptions): Promise<LoggedInUser[]> {
     toRequiredWireInteger(nodeId, "nodeId");
 
@@ -832,6 +1176,14 @@ export class Client {
     return result;
   }
 
+  /**
+   * 解析用户在所有集群节点上的会话信息。
+   * 返回用户在哪些节点在线、活跃会话列表及其连接方式。
+   *
+   * @param user - 目标用户引用
+   * @param options - 可选的请求选项
+   * @returns 用户会话解析结果（在线节点和会话列表）
+   */
   async resolveUserSessions(user: UserRef, options?: RequestOptions): Promise<ResolveUserSessionsResult> {
     validateUserRef(user, "user");
 
@@ -853,6 +1205,13 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取当前连接的集群节点的运行状态。
+   * 包含消息窗口、事件序列、写入门控、冲突统计、消息裁剪、投影和对等节点同步状态。
+   *
+   * @param options - 可选的请求选项
+   * @returns 操作状态对象
+   */
   async operationsStatus(options?: RequestOptions): Promise<OperationsStatus> {
     const result = await this.rpc(
       (requestId) => ({
@@ -869,6 +1228,13 @@ export class Client {
     return result;
   }
 
+  /**
+   * 获取集群节点的性能指标文本。
+   * 返回格式为 Prometheus 或其他监控系统兼容的指标格式字符串。
+   *
+   * @param options - 可选的请求选项
+   * @returns 指标文本字符串
+   */
   async metrics(options?: RequestOptions): Promise<string> {
     const result = await this.rpc(
       (requestId) => ({
