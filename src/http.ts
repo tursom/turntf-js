@@ -3,14 +3,20 @@ import { passwordWireValue, plainPassword, type PasswordInput } from "./password
 import {
   AttachmentType,
   type Attachment,
+  type DeleteUserResult,
   DeliveryMode,
   type BlacklistEntry,
   type ClusterNode,
   type CreateUserRequest,
+  type Event,
   type LoggedInUser,
   type Message,
+  type OperationsStatus,
+  type PeerOriginStatus,
+  type PeerStatus,
   type RequestOptions,
   type ScanUserMetadataRequest,
+  type UpdateUserRequest,
   type UpsertUserMetadataRequest,
   type UserMetadata,
   type UserMetadataScanResult,
@@ -602,6 +608,134 @@ export class HTTPClient {
     return items.map(attachmentFromHTTP);
   }
 
+  /**
+   * 获取指定用户的详细信息。
+   */
+  async getUser(token: string, target: UserRef, options?: RequestOptions): Promise<User> {
+    validateUserRef(target, "target");
+    const response = await this.doJSON(
+      "GET",
+      `/nodes/${target.nodeId}/users/${target.userId}`,
+      token,
+      undefined,
+      [200],
+      options
+    );
+    return userFromHTTP(response);
+  }
+
+  /**
+   * 更新用户信息。仅已设置的字段会被更新。
+   * login_name 为空字符串时解除登录名绑定。频道（role="channel"）不支持设置 login_name。
+   */
+  async updateUser(token: string, target: UserRef, request: UpdateUserRequest, options?: RequestOptions): Promise<User> {
+    validateUserRef(target, "target");
+    if (request.role === "channel" && request.loginName != null && request.loginName !== "") {
+      throw new Error("channel users cannot have a login_name");
+    }
+    const body: Record<string, unknown> = {};
+    if (request.username !== undefined) {
+      body.username = request.username;
+    }
+    if (request.loginName !== undefined) {
+      body.login_name = request.loginName === "" ? "" : request.loginName.trim();
+    }
+    if (request.password) {
+      body.password = passwordWireValue(request.password);
+    }
+    if (request.profileJson && request.profileJson.length > 0) {
+      body.profile = parseJson(bytesToUtf8(request.profileJson));
+    }
+    if (request.role !== undefined) {
+      body.role = request.role;
+    }
+    const response = await this.doJSON(
+      "PATCH",
+      `/nodes/${target.nodeId}/users/${target.userId}`,
+      token,
+      body,
+      [200],
+      options
+    );
+    return userFromHTTP(response);
+  }
+
+  /**
+   * 删除指定用户（软删除）。
+   */
+  async deleteUser(token: string, target: UserRef, options?: RequestOptions): Promise<DeleteUserResult> {
+    validateUserRef(target, "target");
+    const response = await this.doJSON(
+      "DELETE",
+      `/nodes/${target.nodeId}/users/${target.userId}`,
+      token,
+      undefined,
+      [200],
+      options
+    );
+    return deleteUserResultFromHTTP(response);
+  }
+
+  /**
+   * 查询事件日志，支持分页游标。
+   */
+  async listEvents(token: string, after = "0", limit = 0, options?: RequestOptions): Promise<Event[]> {
+    const query = new URLSearchParams();
+    if (after !== "0") {
+      query.set("after", after);
+    }
+    if (limit > 0) {
+      query.set("limit", String(limit));
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    const response = await this.doJSON("GET", `/events${suffix}`, token, undefined, [200], options);
+    const items = Array.isArray(response) ? response : arrayField(response, "items");
+    return items.map(eventFromHTTP);
+  }
+
+  /**
+   * 查询节点运行状态。
+   */
+  async operationsStatus(token: string, options?: RequestOptions): Promise<OperationsStatus> {
+    const response = await this.doJSON("GET", "/ops/status", token, undefined, [200], options);
+    return operationsStatusFromHTTP(response);
+  }
+
+  /**
+   * 获取 Prometheus 格式的监控指标文本。
+   */
+  async metrics(token: string, options?: RequestOptions): Promise<string> {
+    return this.doText("/metrics", token, options);
+  }
+
+  private async doText(path: string, token: string, options?: RequestOptions): Promise<string> {
+    const abort = mergeAbortSignals(options);
+    try {
+      const headers: Record<string, string> = {};
+      if (token !== "") {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      const request: RequestInit = {
+        method: "GET",
+        headers,
+        signal: abort.signal
+      };
+      const response = await this.fetchImpl(this.baseUrl + path, request);
+      const text = await response.text();
+      if (response.status !== 200) {
+        throw new ProtocolError(`unexpected HTTP status ${response.status}: ${text.trim()}`);
+      }
+      return text;
+    } catch (error) {
+      if (error instanceof ProtocolError) {
+        throw error;
+      }
+      throw new ConnectionError(`GET ${path}`, error);
+    } finally {
+      abort.cleanup();
+    }
+  }
+
   private async doJSON(
     method: string,
     path: string,
@@ -757,6 +891,88 @@ function userMetadataScanResultFromHTTP(value: unknown): UserMetadataScanResult 
     items,
     count: typeof count === "number" ? count : items.length,
     nextAfter: String(objectField(value, "next_after") ?? "")
+  };
+}
+
+function eventFromHTTP(value: unknown): Event {
+  return {
+    sequence: idToString(objectField(value, "sequence")),
+    eventId: idToString(objectField(value, "event_id")),
+    eventType: String(objectField(value, "event_type") ?? ""),
+    aggregate: String(objectField(value, "aggregate") ?? ""),
+    aggregateNodeId: idToString(objectField(value, "aggregate_node_id")),
+    aggregateId: idToString(objectField(value, "aggregate_id")),
+    hlc: String(objectField(value, "hlc") ?? ""),
+    originNodeId: idToString(objectField(value, "origin_node_id")),
+    eventJson: base64ToBytes(String(objectField(value, "event_json") ?? ""))
+  };
+}
+
+function deleteUserResultFromHTTP(value: unknown): DeleteUserResult {
+  return {
+    status: String(objectField(value, "status") ?? ""),
+    user: {
+      nodeId: idToString(objectField(value, "node_id")),
+      userId: idToString(objectField(value, "user_id"))
+    }
+  };
+}
+
+function peerOriginStatusFromHTTP(value: unknown): PeerOriginStatus {
+  return {
+    originNodeId: idToString(objectField(value, "origin_node_id")),
+    ackedEventId: idToString(objectField(value, "acked_event_id")),
+    appliedEventId: idToString(objectField(value, "applied_event_id")),
+    unconfirmedEvents: idToString(objectField(value, "unconfirmed_events")),
+    cursorUpdatedAt: String(objectField(value, "cursor_updated_at") ?? ""),
+    remoteLastEventId: idToString(objectField(value, "remote_last_event_id")),
+    pendingCatchup: Boolean(objectField(value, "pending_catchup"))
+  };
+}
+
+function peerStatusFromHTTP(value: unknown): PeerStatus {
+  return {
+    nodeId: idToString(objectField(value, "node_id")),
+    configuredUrl: String(objectField(value, "configured_url") ?? ""),
+    source: String(objectField(value, "source") ?? ""),
+    discoveredUrl: String(objectField(value, "discovered_url") ?? ""),
+    discoveryState: String(objectField(value, "discovery_state") ?? ""),
+    lastDiscoveredAt: String(objectField(value, "last_discovered_at") ?? ""),
+    lastConnectedAt: String(objectField(value, "last_connected_at") ?? ""),
+    lastDiscoveryError: String(objectField(value, "last_discovery_error") ?? ""),
+    connected: Boolean(objectField(value, "connected")),
+    sessionDirection: String(objectField(value, "session_direction") ?? ""),
+    origins: arrayField(value, "origins").map(peerOriginStatusFromHTTP),
+    pendingSnapshotPartitions: Number(objectField(value, "pending_snapshot_partitions") ?? 0),
+    remoteSnapshotVersion: String(objectField(value, "remote_snapshot_version") ?? ""),
+    remoteMessageWindowSize: Number(objectField(value, "remote_message_window_size") ?? 0),
+    clockOffsetMs: idToString(objectField(value, "clock_offset_ms")),
+    lastClockSync: String(objectField(value, "last_clock_sync") ?? ""),
+    snapshotDigestsSentTotal: idToString(objectField(value, "snapshot_digests_sent_total")),
+    snapshotDigestsReceivedTotal: idToString(objectField(value, "snapshot_digests_received_total")),
+    snapshotChunksSentTotal: idToString(objectField(value, "snapshot_chunks_sent_total")),
+    snapshotChunksReceivedTotal: idToString(objectField(value, "snapshot_chunks_received_total")),
+    lastSnapshotDigestAt: String(objectField(value, "last_snapshot_digest_at") ?? ""),
+    lastSnapshotChunkAt: String(objectField(value, "last_snapshot_chunk_at") ?? "")
+  };
+}
+
+function operationsStatusFromHTTP(value: unknown): OperationsStatus {
+  return {
+    nodeId: idToString(objectField(value, "node_id")),
+    messageWindowSize: Number(objectField(value, "message_window_size") ?? 0),
+    lastEventSequence: idToString(objectField(value, "last_event_sequence")),
+    writeGateReady: Boolean(objectField(value, "write_gate_ready")),
+    conflictTotal: idToString(objectField(value, "conflict_total")),
+    messageTrim: {
+      trimmedTotal: idToString(objectField(objectField(value, "message_trim"), "trimmed_total")),
+      lastTrimmedAt: String(objectField(objectField(value, "message_trim"), "last_trimmed_at") ?? "")
+    },
+    projection: {
+      pendingTotal: idToString(objectField(objectField(value, "projection"), "pending_total")),
+      lastFailedAt: String(objectField(objectField(value, "projection"), "last_failed_at") ?? "")
+    },
+    peers: arrayField(value, "peers").map(peerStatusFromHTTP)
   };
 }
 
