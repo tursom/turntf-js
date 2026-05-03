@@ -43,6 +43,7 @@ message ClientEnvelope {
     UpsertUserMetadataRequest upsert_user_metadata = 20;
     DeleteUserMetadataRequest delete_user_metadata = 21;
     ScanUserMetadataRequest scan_user_metadata = 22;
+    ListUsersRequest list_users = 23;
   }
 }
 ```
@@ -76,6 +77,7 @@ message ServerEnvelope {
     UpsertUserMetadataResponse upsert_user_metadata_response = 22;
     DeleteUserMetadataResponse delete_user_metadata_response = 23;
     ScanUserMetadataResponse scan_user_metadata_response = 24;
+    ListUsersResponse list_users_response = 25;
   }
 }
 ```
@@ -183,13 +185,34 @@ message Error {
 | ListEvents | `ListEventsRequest` | `ListEventsResponse` |
 | ListClusterNodes | `ListClusterNodesRequest` | `ListClusterNodesResponse` |
 | ListNodeLoggedInUsers | `ListNodeLoggedInUsersRequest` | `ListNodeLoggedInUsersResponse` |
+| ListUsers | `ListUsersRequest` | `ListUsersResponse` |
 | ResolveUserSessions | `ResolveUserSessionsRequest` | `ResolveUserSessionsResponse` |
 | OperationsStatus | `OperationsStatusRequest` | `OperationsStatusResponse` |
 | Metrics | `MetricsRequest` | `MetricsResponse` |
 | 用户元数据 | 见 protobuf 定义 | 对应 Response |
 | 附件操作 | 见 protobuf 定义 | 对应 Response |
 
-### 4.3 SendMessageRequest 详解
+### 4.3 ListUsersRequest 详解
+
+```protobuf
+message ListUsersRequest {
+  uint64 request_id = 1;
+  string name = 2;
+  UserRef uid = 3;
+}
+
+message ListUsersResponse {
+  uint64 request_id = 1;
+  repeated User items = 2;
+  int32 count = 3;
+}
+```
+
+- `name` 是名称子串过滤，SDK 会先做 `trim()`，服务端按大小写不敏感子串匹配。
+- `uid` 为可选精确过滤；`{ node_id: 0, user_id: 0 }` 与省略 `uid` 等价，表示不按 uid 过滤。
+- 普通用户查看他人时，返回的 `User.login_name` 可能为空字符串。
+
+### 4.4 SendMessageRequest 详解
 
 ```protobuf
 message SendMessageRequest {
@@ -220,7 +243,7 @@ enum ClientDeliveryMode {
 - `delivery_mode` 仅在 `TRANSIENT` 时有意义，`PERSISTENT` 时忽略
 - `target_session` 可选，指定向用户的特定会话投递瞬时包
 
-### 4.4 推送消息
+### 4.5 推送消息
 
 服务端可以在没有对应请求的情况下主动推送消息：
 
@@ -348,7 +371,7 @@ message TransientAccepted {
 - 允许：`sendPacket()` / transient `sendMessage`
 - 允许：`resolveUserSessions()`
 - 允许：`ping()` / `listClusterNodes()` / `listNodeLoggedInUsers()`
-- 不允许：持久消息发送、大部分管理/查询 RPC（服务端返回 `invalid_request`）
+- 不允许：`listUsers()`、持久消息发送、大部分管理/查询 RPC（服务端返回 `invalid_request`）
 
 ## 9. 错误协议
 

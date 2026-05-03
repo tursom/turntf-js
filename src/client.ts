@@ -55,6 +55,7 @@ import type {
   DeliveryMode,
   Event,
   LoggedInUser,
+  ListUsersRequest,
   LoginInfo,
   Message,
   MessageCursor,
@@ -77,12 +78,14 @@ import type {
 import { abortReason, createDeferred, mergeAbortSignals, sleep, type Deferred } from "./utils";
 import {
   cursorForMessage,
+  isZeroUserRef,
   isLoginNameCredentials,
   normalizeLoginName,
   toRequiredWireInteger,
   toWireInteger,
   validateCredentials,
   validateDeliveryMode,
+  validateListUsersRequest,
   validateSessionRef,
   validateUserMetadataKey,
   validateUserMetadataScanRequest,
@@ -629,6 +632,46 @@ export class Client {
     );
     if (!isUser(result)) {
       throw new ProtocolError("missing user in get_user_response");
+    }
+    return result;
+  }
+
+  /**
+   * 获取当前用户可通讯的活跃用户列表。
+   * 支持按名称子串和用户唯一标识过滤。
+   *
+   * @param request - 可选过滤条件
+   * @param options - 可选的请求选项
+   * @returns 用户列表
+   */
+  async listUsers(request: ListUsersRequest = {}, options?: RequestOptions): Promise<User[]> {
+    validateListUsersRequest(request, "request");
+    const name = normalizeListUsersName(request.name);
+
+    const result = await this.rpc(
+      (requestId) => {
+        const listUsers: {
+          requestId: string;
+          name: string;
+          uid?: { nodeId: string; userId: string };
+        } = {
+          requestId,
+          name
+        };
+        if (request.uid != null) {
+          listUsers.uid = listUsersUidToProto(request.uid);
+        }
+        return {
+          body: {
+            oneofKind: "listUsers",
+            listUsers
+          }
+        };
+      },
+      options
+    );
+    if (!Array.isArray(result)) {
+      throw new ProtocolError("missing items in list_users_response");
     }
     return result;
   }
@@ -1542,6 +1585,9 @@ export class Client {
       case "listMessagesResponse":
         this.resolvePending(env.body.listMessagesResponse.requestId, env.body.listMessagesResponse.items.map(messageFromProto));
         return;
+      case "listUsersResponse":
+        this.resolvePending(env.body.listUsersResponse.requestId, env.body.listUsersResponse.items.map(userFromProto));
+        return;
       case "upsertUserAttachmentResponse":
         this.resolvePending(
           env.body.upsertUserAttachmentResponse.requestId,
@@ -1890,6 +1936,17 @@ function validateLimit(value: number, field: string): void {
   if (!Number.isInteger(value) || value < 0) {
     throw new Error(`${field} must be a non-negative integer`);
   }
+}
+
+function normalizeListUsersName(name: string | undefined): string {
+  return name?.trim() ?? "";
+}
+
+function listUsersUidToProto(uid: UserRef): { nodeId: string; userId: string } {
+  if (isZeroUserRef(uid)) {
+    return { nodeId: "0", userId: "0" };
+  }
+  return userRefToProto(uid);
 }
 
 function positiveOrDefault(value: number | undefined, fallback: number): number {

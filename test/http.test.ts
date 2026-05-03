@@ -199,4 +199,91 @@ describe("HTTPClient", () => {
     const users = await client.listNodeLoggedInUsers("admin-token", "4096");
     expect(users[0]?.loginName).toBe("alice.login");
   });
+
+  it("supports communicable user list filters and hidden login names", async () => {
+    let requests = 0;
+    const client = new HTTPClient("http://turntf.test", {
+      fetch: async (input, init) => {
+        requests += 1;
+        const request = input instanceof Request ? input : undefined;
+        const url = new URL(request?.url ?? String(input));
+        const method = init?.method ?? request?.method ?? "GET";
+        const headers = new Headers(init?.headers ?? request?.headers);
+
+        expect(headers.get("Authorization")).toBe("Bearer user-token");
+        expect(method).toBe("GET");
+        expect(url.pathname).toBe("/users");
+
+        if (requests === 1) {
+          expect(url.searchParams.get("name")).toBe("Bob");
+          expect(url.searchParams.get("uid")).toBe("4096:1026");
+          return Response.json([
+            {
+              node_id: "4096",
+              user_id: "1026",
+              username: "bob",
+              login_name: "",
+              role: "user",
+              profile: { display_name: "Bobby" },
+              system_reserved: false,
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              origin_node_id: "4096"
+            }
+          ]);
+        }
+
+        expect(url.searchParams.has("name")).toBe(false);
+        expect(url.searchParams.has("uid")).toBe(false);
+        return Response.json({
+          items: [
+            {
+              node_id: "4096",
+              user_id: "1025",
+              username: "alice",
+              login_name: "alice.login",
+              role: "user",
+              profile: {},
+              system_reserved: false,
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              origin_node_id: "4096"
+            },
+            {
+              node_id: "4096",
+              user_id: "1026",
+              username: "bob",
+              login_name: "",
+              role: "user",
+              profile: {},
+              system_reserved: false,
+              created_at: "2026-05-01T00:00:00Z",
+              updated_at: "2026-05-01T00:00:00Z",
+              origin_node_id: "4096"
+            }
+          ],
+          count: 2
+        });
+      }
+    });
+
+    const filtered = await client.listUsers("user-token", {
+      name: " Bob ",
+      uid: { nodeId: "4096", userId: "1026" }
+    });
+    expect(filtered).toHaveLength(1);
+    expect(filtered[0]?.username).toBe("bob");
+    expect(filtered[0]?.loginName).toBe("");
+
+    const all = await client.listUsers("user-token", {
+      uid: { nodeId: "0", userId: "0" }
+    });
+    expect(all).toHaveLength(2);
+    expect(all[1]?.loginName).toBe("");
+
+    await expect(client.listUsers("user-token", {
+      uid: { nodeId: "0", userId: "1026" }
+    })).rejects.toThrow("request.uid must provide both nodeId and userId together");
+    expect(requests).toBe(2);
+  });
 });

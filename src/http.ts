@@ -9,6 +9,7 @@ import {
   type ClusterNode,
   type CreateUserRequest,
   type Event,
+  type ListUsersRequest,
   type LoggedInUser,
   type Message,
   type OperationsStatus,
@@ -35,9 +36,11 @@ import {
 import {
   assertDecimalString,
   idToString,
+  isZeroUserRef,
   normalizeLoginName,
   toRequiredWireInteger,
   validateDeliveryMode,
+  validateListUsersRequest,
   validateLoginName,
   validateUserMetadataKey,
   validateUserMetadataScanRequest,
@@ -213,6 +216,32 @@ export class HTTPClient {
    */
   createChannel(token: string, request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>, options?: RequestOptions): Promise<User> {
     return this.createUser(token, { ...request, role: request.role ?? "channel" }, options);
+  }
+
+  /**
+   * 获取当前用户可通讯的活跃用户列表。
+   * 支持按名称子串和用户唯一标识过滤。
+   *
+   * @param token - 认证令牌
+   * @param request - 可选过滤条件
+   * @param options - 可选请求选项
+   * @returns 用户列表
+   */
+  async listUsers(token: string, request: ListUsersRequest = {}, options?: RequestOptions): Promise<User[]> {
+    validateListUsersRequest(request, "request");
+    const query = new URLSearchParams();
+    const name = normalizeListUsersName(request.name);
+    if (name !== undefined) {
+      query.set("name", name);
+    }
+    const uid = uidFilterToHTTP(request.uid);
+    if (uid !== undefined) {
+      query.set("uid", uid);
+    }
+    const suffix = query.size === 0 ? "" : `?${query.toString()}`;
+    const response = await this.doJSON("GET", `/users${suffix}`, token, undefined, [200], options);
+    const items = Array.isArray(response) ? response : arrayField(response, "items");
+    return items.map(userFromHTTP);
   }
 
   /**
@@ -813,6 +842,21 @@ function objectField(value: unknown, field: string): unknown {
 function arrayField(value: unknown, field: string): unknown[] {
   const item = objectField(value, field);
   return Array.isArray(item) ? item : [];
+}
+
+function normalizeListUsersName(name: string | undefined): string | undefined {
+  if (name == null) {
+    return undefined;
+  }
+  const normalized = name.trim();
+  return normalized === "" ? undefined : normalized;
+}
+
+function uidFilterToHTTP(uid: UserRef | undefined): string | undefined {
+  if (uid == null || isZeroUserRef(uid)) {
+    return undefined;
+  }
+  return `${uid.nodeId}:${uid.userId}`;
 }
 
 function userRefFromHTTP(value: unknown): UserRef {

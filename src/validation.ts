@@ -1,6 +1,7 @@
 import {
   type Credentials,
   DeliveryMode,
+  type ListUsersRequest,
   type LoginNameCredentials,
   type Message,
   type MessageCursor,
@@ -62,6 +63,36 @@ export function assertRequiredDecimalString(value: string, field: string): void 
 export function validateUserRef(ref: UserRef, field = "user"): void {
   assertRequiredDecimalString(ref.nodeId, `${field}.nodeId`);
   assertRequiredDecimalString(ref.userId, `${field}.userId`);
+}
+
+/**
+ * 判断 UserRef 是否为零值引用。
+ * 在部分查询协议中，`{ nodeId: "0", userId: "0" }` 表示“未指定目标”。
+ *
+ * @param ref - 待判断的用户引用
+ * @returns 如果 nodeId 和 userId 都为 "0" 则返回 true
+ */
+export function isZeroUserRef(ref: UserRef | undefined): boolean {
+  return ref?.nodeId === "0" && ref.userId === "0";
+}
+
+/**
+ * 验证用于 listUsers 过滤的 uid。
+ * 允许 `{ nodeId: "0", userId: "0" }` 作为“未指定 uid 过滤”的显式零值，
+ * 但不允许一半为 0、一半为非 0 的半空引用。
+ *
+ * @param ref - 待验证的用户引用
+ * @param field - 字段名称前缀，默认为 "uid"
+ * @throws 如果 uid 非法则抛出错误
+ */
+export function validateListUsersUid(ref: UserRef, field = "uid"): void {
+  assertDecimalString(ref.nodeId, `${field}.nodeId`);
+  assertDecimalString(ref.userId, `${field}.userId`);
+  const nodeIdIsZero = ref.nodeId === "0";
+  const userIdIsZero = ref.userId === "0";
+  if (nodeIdIsZero !== userIdIsZero) {
+    throw new Error(`${field} must provide both nodeId and userId together`);
+  }
 }
 
 /**
@@ -228,6 +259,19 @@ export function validateUserMetadataScanRequest(request: ScanUserMetadataRequest
     !request.after.startsWith(request.prefix)
   ) {
     throw new Error(`${field}.after must use the same prefix as ${field}.prefix`);
+  }
+}
+
+/**
+ * 验证列用户请求。
+ * `name` 允许为空白字符串，SDK 会在发请求前将其规范化为“未设置”。
+ *
+ * @param request - 列用户请求参数
+ * @param field - 字段名称前缀，默认为 "request"
+ */
+export function validateListUsersRequest(request: ListUsersRequest, field = "request"): void {
+  if (request.uid != null) {
+    validateListUsersUid(request.uid, `${field}.uid`);
   }
 }
 

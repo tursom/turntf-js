@@ -30,6 +30,7 @@
 
 - 登录：`login()`、`loginWithPassword()`
 - 用户创建：`createUser()`、`createChannel()`
+- 可通讯用户查询：`listUsers()`
 - 消息查询与发送：`listMessages()`、`postMessage()`、`postPacket()`
 - 附件能力：`createSubscription()`、`upsertAttachment()`、`deleteAttachment()`、`listAttachments()`
 - 黑名单能力：`blockUser()`、`unblockUser()`、`listBlockedUsers()`
@@ -53,6 +54,7 @@
 - 自动 ping
 - 自动重连
 - 请求级 WS RPC
+- `listUsers()` 可通讯用户查询
 - `resolveUserSessions()` 与按会话定向 `sendPacket()`
 
 `Client` 同时还内置了一个 `client.http: HTTPClient`，用于：
@@ -111,6 +113,12 @@ await http.postMessage(
   { nodeId: user.nodeId, userId: user.userId },
   Buffer.from("hello")
 );
+
+const communicableUsers = await http.listUsers(token, {
+  name: "alice",
+  uid: { nodeId: "4096", userId: "1025" }
+});
+console.log("可通讯用户数", communicableUsers.length);
 ```
 
 几个实现细节值得提前知道：
@@ -119,6 +127,8 @@ await http.postMessage(
 - `RequestOptions.timeoutMs` 与 `signal` 同时适用于 HTTP 与 WS RPC。
 - HTTP JSON 里的大整数会用 `json-bigint` 解析，再转换成 SDK 里的十进制字符串。
 - `postPacket()` 只负责发瞬时包，不会解析在线会话；如果你要按具体会话定向发包，需要切换到 `Client.resolveUserSessions()` + `Client.sendPacket(..., { targetSession })`。
+- `listUsers()` 返回的是“当前用户可通讯的活跃用户”集合；普通用户查看他人时，`loginName` 可能为空字符串。
+- `listUsers({ uid: { nodeId: "0", userId: "0" } })` 在 WebSocket 协议里等价于省略 `uid`，HTTP 侧会直接省略该查询参数。
 
 ## 5. `Client` 生命周期
 

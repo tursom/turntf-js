@@ -819,6 +819,109 @@ describe("Client", () => {
     }
   });
 
+  it("supports list_users RPC filters and hidden login names", async () => {
+    const server = await TestServer.start();
+    const client = new Client({
+      baseUrl: server.baseUrl(),
+      credentials: {
+        nodeId: "4096",
+        userId: "1025",
+        password: plainPasswordSync("alice-password")
+      },
+      requestTimeoutMs: 200,
+      pingIntervalMs: 60_000
+    });
+
+    const bob: proto.User = {
+      nodeId: "4096",
+      userId: "1026",
+      username: "bob",
+      loginName: "",
+      role: "user",
+      profileJson: Buffer.from("{\"display_name\":\"Bobby\"}"),
+      systemReserved: false,
+      createdAt: "2026-05-01T00:00:00Z",
+      updatedAt: "2026-05-01T00:00:00Z",
+      originNodeId: "4096"
+    };
+
+    try {
+      const connectPromise = client.connect();
+      const conn = await server.nextConnection();
+      await conn.readClientEnvelope();
+      await conn.sendServerEnvelope(loginResponseEnvelope());
+      await connectPromise;
+
+      const byNamePromise = client.listUsers({ name: " Bob " });
+      const byNameReq = await conn.readClientEnvelope();
+      const byNameBody = clientBody(byNameReq, "listUsers");
+      expect(byNameBody.listUsers.name).toBe("Bob");
+      expect(byNameBody.listUsers.uid).toBeUndefined();
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "listUsersResponse",
+          listUsersResponse: {
+            requestId: byNameBody.listUsers.requestId,
+            items: [bob],
+            count: 1
+          }
+        }
+      });
+      const byName = await byNamePromise;
+      expect(byName).toHaveLength(1);
+      expect(byName[0]?.username).toBe("bob");
+      expect(byName[0]?.loginName).toBe("");
+
+      const byUidPromise = client.listUsers({
+        uid: { nodeId: "4096", userId: "1026" }
+      });
+      const byUidReq = await conn.readClientEnvelope();
+      const byUidBody = clientBody(byUidReq, "listUsers");
+      expect(byUidBody.listUsers.name).toBe("");
+      expect(byUidBody.listUsers.uid).toEqual({ nodeId: "4096", userId: "1026" });
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "listUsersResponse",
+          listUsersResponse: {
+            requestId: byUidBody.listUsers.requestId,
+            items: [bob],
+            count: 1
+          }
+        }
+      });
+      expect((await byUidPromise)[0]?.userId).toBe("1026");
+
+      const zeroUidPromise = client.listUsers({
+        uid: { nodeId: "0", userId: "0" }
+      });
+      const zeroUidReq = await conn.readClientEnvelope();
+      const zeroUidBody = clientBody(zeroUidReq, "listUsers");
+      expect(zeroUidBody.listUsers.name).toBe("");
+      expect(zeroUidBody.listUsers.uid).toEqual({ nodeId: "0", userId: "0" });
+      await conn.sendServerEnvelope({
+        body: {
+          oneofKind: "listUsersResponse",
+          listUsersResponse: {
+            requestId: zeroUidBody.listUsers.requestId,
+            items: [userRecord("alice"), bob],
+            count: 2
+          }
+        }
+      });
+      const zeroUid = await zeroUidPromise;
+      expect(zeroUid).toHaveLength(2);
+      expect(zeroUid[0]?.loginName).toBe("alice.login");
+      expect(zeroUid[1]?.loginName).toBe("");
+
+      await expect(client.listUsers({
+        uid: { nodeId: "0", userId: "1026" }
+      })).rejects.toThrow("request.uid must provide both nodeId and userId together");
+    } finally {
+      await client.close();
+      await server.close();
+    }
+  });
+
   it("resolves sessions and targets transient packets to a specific session", async () => {
     const server = await TestServer.start();
     const handler = new RecordingHandler();

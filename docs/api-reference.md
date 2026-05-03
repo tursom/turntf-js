@@ -62,6 +62,7 @@ import {
   DeleteUserResult,
   CreateUserRequest,
   UpdateUserRequest,
+  ListUsersRequest,
   UpsertUserMetadataRequest,
   ScanUserMetadataRequest,
   RequestOptions,
@@ -162,6 +163,7 @@ postPacket(target: UserRef, body: Uint8Array, deliveryMode: DeliveryMode, option
 createUser(request: CreateUserRequest, options?: RequestOptions): Promise<User>
 createChannel(request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>, options?: RequestOptions): Promise<User>
 getUser(target: UserRef, options?: RequestOptions): Promise<User>
+listUsers(request?: ListUsersRequest, options?: RequestOptions): Promise<User[]>
 updateUser(target: UserRef, request: UpdateUserRequest, options?: RequestOptions): Promise<User>
 deleteUser(target: UserRef, options?: RequestOptions): Promise<DeleteUserResult>
 ```
@@ -254,6 +256,7 @@ loginWithPassword(loginName: string, password: PasswordInput, options?: RequestO
 createUser(token: string, request: CreateUserRequest, options?: RequestOptions): Promise<User>
 createChannel(token: string, request: Omit<CreateUserRequest, "role"> & Partial<Pick<CreateUserRequest, "role">>, options?: RequestOptions): Promise<User>
 createSubscription(token: string, user: UserRef, channel: UserRef, options?: RequestOptions): Promise<void>
+listUsers(token: string, request?: ListUsersRequest, options?: RequestOptions): Promise<User[]>
 
 listMessages(token: string, target: UserRef, limit?: number, options?: RequestOptions): Promise<Message[]>
 postMessage(token: string, target: UserRef, body: Uint8Array, options?: RequestOptions): Promise<Message>
@@ -370,7 +373,7 @@ interface User {
   nodeId: string;
   userId: string;
   username: string;
-  loginName: string;
+  loginName: string;          // 普通用户查看他人时，服务端可能返回空字符串
   role: string;               // "user" | "channel" | "admin"
   profileJson: Uint8Array;    // JSON profile 的原始字节
   systemReserved: boolean;
@@ -395,6 +398,11 @@ interface UpdateUserRequest {
   role?: string;
 }
 
+interface ListUsersRequest {
+  name?: string;    // 名称子串过滤，SDK 会自动 trim
+  uid?: UserRef;    // HTTP 使用 "node_id:user_id"，WS 中 {0,0} 表示不按 uid 过滤
+}
+
 interface DeleteUserResult {
   status: string;
   user: UserRef;
@@ -408,6 +416,8 @@ interface LoginInfo {
 ```
 
 - `UpdateUserRequest.loginName` 缺席表示不修改，传空串表示解绑当前登录名。
+- `listUsers()` 返回的是“当前用户可通讯的活跃用户”集合，而不是全量用户。
+- 普通用户通过 `listUsers()` 查看他人时，`User.loginName` 可能为空字符串。
 
 ### 消息
 
