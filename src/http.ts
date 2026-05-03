@@ -9,6 +9,10 @@ import {
   type ClusterNode,
   type CreateUserRequest,
   type Event,
+  type HTTPUpsertUserMetadataRequest,
+  type HTTPUserMetadata,
+  type HTTPUserMetadataScanResult,
+  type HTTPUserMetadataTypedValue,
   type ListUsersRequest,
   type LoggedInUser,
   type Message,
@@ -18,9 +22,6 @@ import {
   type RequestOptions,
   type ScanUserMetadataRequest,
   type UpdateUserRequest,
-  type UpsertUserMetadataRequest,
-  type UserMetadata,
-  type UserMetadataScanResult,
   type User,
   type UserRef
 } from "./types";
@@ -40,6 +41,7 @@ import {
   normalizeLoginName,
   toRequiredWireInteger,
   validateDeliveryMode,
+  validateHTTPUpsertUserMetadataRequest,
   validateListUsersRequest,
   validateLoginName,
   validateUserMetadataKey,
@@ -53,6 +55,10 @@ import {
 export interface HTTPClientOptions {
   /** 自定义 fetch 函数，用于替换全局 fetch，适用于测试或特定运行时环境 */
   fetch?: typeof fetch;
+}
+
+interface RawJSONBody {
+  readonly rawJSON: string;
 }
 
 /**
@@ -221,6 +227,8 @@ export class HTTPClient {
   /**
    * 获取当前用户可通讯的活跃用户列表。
    * 支持按名称子串和用户唯一标识过滤。
+   * 普通用户的结果会受到目标用户或频道的 `system.visible_to_others=false` metadata 影响，
+   * 但这不会阻止调用方在已知 uid 时继续直接发送消息。
    *
    * @param token - 认证令牌
    * @param request - 可选过滤条件
@@ -441,6 +449,8 @@ export class HTTPClient {
 
   /**
    * 获取指定用户的元数据。
+   * HTTP 响应始终返回 raw bytes 的 `value`，并在服务端能稳定解释时附加 `typedValue` 视图。
+   * owner 支持所有非系统保留用户，包括 `channel`。
    *
    * @param token - 认证令牌
    * @param owner - 元数据所有者引用
@@ -448,7 +458,7 @@ export class HTTPClient {
    * @param options - 可选请求选项
    * @returns 用户元数据对象
    */
-  async getUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
+  async getUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<HTTPUserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
     const response = await this.doJSON(
@@ -465,7 +475,8 @@ export class HTTPClient {
   /**
    * 创建或更新用户元数据。
    * 如果键名已存在则更新，不存在则创建。
-   * 支持设置过期时间，过期后元数据自动删除。
+   * HTTP 请求必须二选一提供 raw bytes `value` 或 `typedValue`；WebSocket/protobuf 侧仍保持 raw bytes。
+   * owner 支持所有非系统保留用户，包括 `channel`。
    *
    * @param token - 认证令牌
    * @param owner - 元数据所有者引用
@@ -478,25 +489,17 @@ export class HTTPClient {
     token: string,
     owner: UserRef,
     key: string,
-    request: UpsertUserMetadataRequest,
+    request: HTTPUpsertUserMetadataRequest,
     options?: RequestOptions
-  ): Promise<UserMetadata> {
+  ): Promise<HTTPUserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
-    if (request.value == null) {
-      throw new Error("value is required");
-    }
-    const body: Record<string, unknown> = {
-      value: bytesToBase64(request.value)
-    };
-    if (request.expiresAt !== undefined) {
-      body.expires_at = request.expiresAt;
-    }
+    validateHTTPUpsertUserMetadataRequest(request, key, "request");
     const response = await this.doJSON(
       "PUT",
       `/nodes/${owner.nodeId}/users/${owner.userId}/metadata/${encodeURIComponent(key)}`,
       token,
-      body,
+      rawJSONBody(serializeHTTPUserMetadataRequest(request)),
       [200, 201],
       options
     );
@@ -512,7 +515,7 @@ export class HTTPClient {
    * @param options - 可选请求选项
    * @returns 被删除的用户元数据对象（包含删除时间）
    */
-  async deleteUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<UserMetadata> {
+  async deleteUserMetadata(token: string, owner: UserRef, key: string, options?: RequestOptions): Promise<HTTPUserMetadata> {
     validateUserRef(owner, "owner");
     validateUserMetadataKey(key, "key");
     const response = await this.doJSON(
@@ -540,7 +543,7 @@ export class HTTPClient {
     owner: UserRef,
     request: ScanUserMetadataRequest = {},
     options?: RequestOptions
-  ): Promise<UserMetadataScanResult> {
+  ): Promise<HTTPUserMetadataScanResult> {
     validateUserRef(owner, "owner");
     validateUserMetadataScanRequest(request, "request");
     const query = new URLSearchParams();
@@ -797,7 +800,7 @@ export class HTTPClient {
       let payload: string | undefined;
       if (body !== undefined) {
         headers["Content-Type"] = "application/json";
-        payload = stringifyJson(body);
+        payload = isRawJSONBody(body) ? body.rawJSON : stringifyJson(body);
       }
       if (token !== "") {
         headers.Authorization = `Bearer ${token}`;
@@ -830,6 +833,81 @@ export class HTTPClient {
       abort.cleanup();
     }
   }
+}
+
+function rawJSONBody(rawJSON: string): RawJSONBody {
+  return { rawJSON };
+}
+
+function isRawJSONBody(value: unknown): value is RawJSONBody {
+  return value != null
+    && typeof value === "object"
+    && "rawJSON" in value
+    && typeof (value as RawJSONBody).rawJSON === "string";
+}
+
+function serializeHTTPUserMetadataRequest(request: HTTPUpsertUserMetadataRequest): string {
+  const fields: string[] = [];
+  if ("value" in request && request.value != null) {
+    fields.push(`"value":${stringifyJson(bytesToBase64(request.value))}`);
+  } else if ("typedValue" in request && request.typedValue != null) {
+    fields.push(`"typed_value":${serializeHTTPUserMetadataTypedValue(request.typedValue)}`);
+  }
+  if (request.expiresAt !== undefined) {
+    fields.push(`"expires_at":${stringifyJson(request.expiresAt)}`);
+  }
+  return `{${fields.join(",")}}`;
+}
+
+function serializeHTTPUserMetadataTypedValue(value: HTTPUserMetadataTypedValue): string {
+  switch (value.kind) {
+    case "bytes":
+      return `{${[
+        `"kind":"bytes"`,
+        `"bytes_value":${stringifyJson(bytesToBase64(value.bytesValue))}`
+      ].join(",")}}`;
+    case "bool":
+      return `{${[
+        `"kind":"bool"`,
+        `"bool_value":${value.boolValue ? "true" : "false"}`
+      ].join(",")}}`;
+    case "string":
+      return `{${[
+        `"kind":"string"`,
+        `"string_value":${stringifyJson(value.stringValue)}`
+      ].join(",")}}`;
+    case "number":
+      return `{${[
+        `"kind":"number"`,
+        `"number_value":${serializeHTTPUserMetadataNumberValue(value.numberValue)}`
+      ].join(",")}}`;
+    case "json":
+      return `{${[
+        `"kind":"json"`,
+        `"json_value":${serializeHTTPUserMetadataJSONValue(value.jsonValue)}`
+      ].join(",")}}`;
+    default:
+      throw new Error(`unsupported typed value kind ${(value as { kind: string }).kind}`);
+  }
+}
+
+function serializeHTTPUserMetadataNumberValue(value: number | bigint | string): string {
+  if (typeof value === "string") {
+    return value.trim();
+  }
+  const encoded = stringifyJson(value);
+  if (typeof encoded !== "string") {
+    throw new Error("numberValue must be JSON serializable");
+  }
+  return encoded;
+}
+
+function serializeHTTPUserMetadataJSONValue(value: unknown): string {
+  const encoded = stringifyJson(value);
+  if (typeof encoded !== "string") {
+    throw new Error("jsonValue must be JSON serializable");
+  }
+  return encoded;
 }
 
 function objectField(value: unknown, field: string): unknown {
@@ -934,8 +1012,9 @@ function blacklistEntryFromHTTP(value: unknown): BlacklistEntry {
   };
 }
 
-function userMetadataFromHTTP(value: unknown): UserMetadata {
-  return {
+function userMetadataFromHTTP(value: unknown): HTTPUserMetadata {
+  const typedValue = userMetadataTypedValueFromHTTP(objectField(value, "typed_value"));
+  const metadata: HTTPUserMetadata = {
     owner: userRefFromHTTP(objectField(value, "owner")),
     key: String(objectField(value, "key") ?? ""),
     value: base64ToBytes(String(objectField(value, "value") ?? "")),
@@ -944,9 +1023,73 @@ function userMetadataFromHTTP(value: unknown): UserMetadata {
     expiresAt: String(objectField(value, "expires_at") ?? ""),
     originNodeId: idToString(objectField(value, "origin_node_id"))
   };
+  if (typedValue != null) {
+    metadata.typedValue = typedValue;
+  }
+  return metadata;
 }
 
-function userMetadataScanResultFromHTTP(value: unknown): UserMetadataScanResult {
+function userMetadataTypedValueFromHTTP(value: unknown): HTTPUserMetadataTypedValue | undefined {
+  if (value == null || typeof value !== "object") {
+    return undefined;
+  }
+  const kind = String(objectField(value, "kind") ?? "");
+  switch (kind) {
+    case "bytes": {
+      const bytesValue = objectField(value, "bytes_value");
+      if (typeof bytesValue !== "string") {
+        return undefined;
+      }
+      return {
+        kind: "bytes",
+        bytesValue: base64ToBytes(bytesValue)
+      };
+    }
+    case "bool": {
+      const boolValue = objectField(value, "bool_value");
+      if (typeof boolValue !== "boolean") {
+        return undefined;
+      }
+      return {
+        kind: "bool",
+        boolValue
+      };
+    }
+    case "string": {
+      const stringValue = objectField(value, "string_value");
+      if (typeof stringValue !== "string") {
+        return undefined;
+      }
+      return {
+        kind: "string",
+        stringValue
+      };
+    }
+    case "number": {
+      const numberValue = objectField(value, "number_value");
+      if (typeof numberValue !== "number" && typeof numberValue !== "string" && typeof numberValue !== "bigint") {
+        return undefined;
+      }
+      return {
+        kind: "number",
+        numberValue
+      };
+    }
+    case "json": {
+      if (!("json_value" in (value as Record<string, unknown>))) {
+        return undefined;
+      }
+      return {
+        kind: "json",
+        jsonValue: objectField(value, "json_value")
+      };
+    }
+    default:
+      return undefined;
+  }
+}
+
+function userMetadataScanResultFromHTTP(value: unknown): HTTPUserMetadataScanResult {
   const items = arrayField(value, "items").map(userMetadataFromHTTP);
   const count = objectField(value, "count");
   return {

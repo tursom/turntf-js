@@ -44,36 +44,36 @@ import {
 } from "./mapping";
 import { passwordWireValue, validatePassword, type PasswordInput } from "./password";
 import { CursorStore, MemoryCursorStore } from "./store";
-import type {
-  Attachment,
-  AttachmentType,
-  BlacklistEntry,
-  ClusterNode,
-  Credentials,
-  CreateUserRequest,
-  DeleteUserResult,
-  DeliveryMode,
-  Event,
-  LoggedInUser,
-  ListUsersRequest,
-  LoginInfo,
-  Message,
-  MessageCursor,
-  OperationsStatus,
-  Packet,
-  ResolveUserSessionsResult,
-  RelayAccepted,
-  RequestOptions,
-  ScanUserMetadataRequest,
-  SendPacketOptions,
-  SessionRef,
-  Subscription,
-  UpsertUserMetadataRequest,
-  UpdateUserRequest,
-  UserMetadata,
-  UserMetadataScanResult,
-  User,
-  UserRef
+import {
+  type Attachment,
+  type AttachmentType,
+  type BlacklistEntry,
+  type ClusterNode,
+  type Credentials,
+  type CreateUserRequest,
+  type DeleteUserResult,
+  type DeliveryMode,
+  type Event,
+  type LoggedInUser,
+  type ListUsersRequest,
+  type LoginInfo,
+  type Message,
+  type MessageCursor,
+  type OperationsStatus,
+  type Packet,
+  type ResolveUserSessionsResult,
+  type RelayAccepted,
+  type RequestOptions,
+  type ScanUserMetadataRequest,
+  type SendPacketOptions,
+  type SessionRef,
+  type Subscription,
+  type UpsertUserMetadataRequest,
+  type UpdateUserRequest,
+  type UserMetadata,
+  type UserMetadataScanResult,
+  type User,
+  type UserRef
 } from "./types";
 import { abortReason, createDeferred, mergeAbortSignals, sleep, type Deferred } from "./utils";
 import {
@@ -88,6 +88,7 @@ import {
   validateListUsersRequest,
   validateSessionRef,
   validateUserMetadataKey,
+  validateUserMetadataValuePolicy,
   validateUserMetadataScanRequest,
   validateUserRef
 } from "./validation";
@@ -639,6 +640,8 @@ export class Client {
   /**
    * 获取当前用户可通讯的活跃用户列表。
    * 支持按名称子串和用户唯一标识过滤。
+   * 普通用户看到的结果会受到目标用户或频道 `system.visible_to_others=false` metadata 的影响，
+   * 但这不会阻止调用方在已知 uid 时继续直接发送消息。
    *
    * @param request - 可选过滤条件
    * @param options - 可选的请求选项
@@ -753,6 +756,7 @@ export class Client {
 
   /**
    * 获取指定用户的元数据。
+   * WebSocket/protobuf metadata API 保持 raw bytes 语义，不提供 HTTP typed_value 视图。
    *
    * @param owner - 元数据所有者引用
    * @param key - 元数据键名
@@ -785,7 +789,8 @@ export class Client {
   /**
    * 创建或更新用户元数据。
    * 如果键名已存在则更新，不存在则创建。
-   * 支持设置过期时间，过期后元数据自动删除。
+   * WebSocket/protobuf metadata API 始终直接发送 raw bytes；
+   * 对于 `system.visible_to_others`，请传入 UTF-8 `true` / `false`。
    *
    * @param owner - 元数据所有者引用
    * @param key - 元数据键名
@@ -804,6 +809,7 @@ export class Client {
     if (request.value == null) {
       throw new Error("value is required");
     }
+    validateUserMetadataValuePolicy(key, request.value, request.expiresAt, "request");
 
     const result = await this.rpc(
       (requestId) => {

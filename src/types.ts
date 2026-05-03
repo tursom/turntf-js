@@ -219,6 +219,7 @@ export interface Attachment {
  * 用户元数据，与特定用户关联的键值对。
  * 支持设置过期时间，过期后自动删除。
  * 键名只能包含字母、数字、点、下划线、冒号和短横线，最长 128 个字符。
+ * 该类型用于 WebSocket/protobuf 和通用 raw-bytes 场景；HTTP JSON 的 typed_value 视图见 HTTPUserMetadata。
  */
 export interface UserMetadata {
   /** 元数据所有者引用 */
@@ -238,11 +239,95 @@ export interface UserMetadata {
 }
 
 /**
+ * 系统保留的 metadata key 常量。
+ */
+export const SystemUserMetadataKey = {
+  /** 控制普通用户在 listUsers 结果里是否能看到该用户或频道。 */
+  VisibleToOthers: "system.visible_to_others"
+} as const;
+
+/**
+ * HTTP metadata typed_value：原始 bytes 视图。
+ * 请求时使用 base64 写入；响应端通常不会稳定返回 bytes 视图，但 SDK 会兼容解析。
+ */
+export interface HTTPUserMetadataBytesTypedValue {
+  kind: "bytes";
+  bytesValue: Uint8Array;
+}
+
+/**
+ * HTTP metadata typed_value：布尔视图。
+ * 适用于 `system.visible_to_others` 等布尔语义键。
+ */
+export interface HTTPUserMetadataBoolTypedValue {
+  kind: "bool";
+  boolValue: boolean;
+}
+
+/**
+ * HTTP metadata typed_value：字符串视图。
+ */
+export interface HTTPUserMetadataStringTypedValue {
+  kind: "string";
+  stringValue: string;
+}
+
+/**
+ * HTTP metadata typed_value：数字视图。
+ * `numberValue` 允许 `string`，用于保留超出 JavaScript 安全整数范围或需要精确文本表示的 JSON 数字。
+ */
+export interface HTTPUserMetadataNumberTypedValue {
+  kind: "number";
+  numberValue: number | bigint | string;
+}
+
+/**
+ * HTTP metadata typed_value：JSON 视图。
+ * SDK 会按 JSON 语义序列化/反序列化该值。
+ */
+export interface HTTPUserMetadataJSONTypedValue {
+  kind: "json";
+  jsonValue: unknown;
+}
+
+/**
+ * HTTP metadata typed_value 联合类型。
+ */
+export type HTTPUserMetadataTypedValue =
+  | HTTPUserMetadataBytesTypedValue
+  | HTTPUserMetadataBoolTypedValue
+  | HTTPUserMetadataStringTypedValue
+  | HTTPUserMetadataNumberTypedValue
+  | HTTPUserMetadataJSONTypedValue;
+
+/**
+ * HTTP metadata 响应对象。
+ * 始终保留 raw bytes 的 `value`，并在服务端能够稳定解释时附加 `typedValue` 视图。
+ */
+export interface HTTPUserMetadata extends UserMetadata {
+  /** 服务端可稳定解释时返回的 typed_value 视图。 */
+  typedValue?: HTTPUserMetadataTypedValue;
+}
+
+/**
  * 用户元数据扫描结果，包含匹配的元数据列表以及用于分页的游标。
  */
 export interface UserMetadataScanResult {
   /** 匹配的元数据项列表 */
   items: UserMetadata[];
+  /** 结果总数 */
+  count: number;
+  /** 下一页游标值 */
+  nextAfter: string;
+}
+
+/**
+ * HTTP 用户元数据扫描结果。
+ * 与 UserMetadataScanResult 相同，但条目支持可选的 typed_value 视图。
+ */
+export interface HTTPUserMetadataScanResult {
+  /** 匹配的元数据项列表 */
+  items: HTTPUserMetadata[];
   /** 结果总数 */
   count: number;
   /** 下一页游标值 */
@@ -580,6 +665,7 @@ export interface ListUsersRequest {
 
 /**
  * 创建或更新用户元数据的请求参数。
+ * 供 WebSocket/protobuf metadata API 使用，始终直接发送原始 bytes。
  */
 export interface UpsertUserMetadataRequest {
   /** 元数据值（字节数组） */
@@ -587,6 +673,38 @@ export interface UpsertUserMetadataRequest {
   /** 过期时间（可选，空字符串表示永不过期） */
   expiresAt?: string;
 }
+
+/**
+ * HTTP 创建或更新用户元数据的请求参数：使用原始 bytes。
+ */
+export interface HTTPUpsertUserMetadataValueRequest {
+  /** 原始元数据值（字节数组） */
+  value: Uint8Array;
+  /** HTTP typed_value 视图，与 value 互斥。 */
+  typedValue?: never;
+  /** 过期时间（可选，空字符串表示永不过期） */
+  expiresAt?: string;
+}
+
+/**
+ * HTTP 创建或更新用户元数据的请求参数：使用 typed_value 视图。
+ */
+export interface HTTPUpsertUserMetadataTypedValueRequest {
+  /** 原始 bytes 视图，与 typedValue 互斥。 */
+  value?: never;
+  /** typed_value 视图。 */
+  typedValue: HTTPUserMetadataTypedValue;
+  /** 过期时间（可选，空字符串表示永不过期） */
+  expiresAt?: string;
+}
+
+/**
+ * HTTP 创建或更新用户元数据的请求参数。
+ * 必须且只能提供 `value` 或 `typedValue` 其中之一。
+ */
+export type HTTPUpsertUserMetadataRequest =
+  | HTTPUpsertUserMetadataValueRequest
+  | HTTPUpsertUserMetadataTypedValueRequest;
 
 /**
  * 扫描用户元数据的请求参数。

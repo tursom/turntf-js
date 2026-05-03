@@ -307,6 +307,7 @@ export function userMetadataFromProto(metadata: ProtoUserMetadata | undefined): 
   if (metadata == null) {
     throw new ProtocolError("missing metadata");
   }
+  // WebSocket/protobuf 仍只携带 raw bytes；HTTP typed_value 视图不会在这里推导。
   return {
     owner: userRefFromProto(metadata.owner),
     key: metadata.key,
