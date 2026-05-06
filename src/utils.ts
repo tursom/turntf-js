@@ -63,6 +63,9 @@ export function stringifyJson(value: unknown): string {
   return json.stringify(value);
 }
 
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 /**
  * 将 Uint8Array 字节数组编码为 Base64 字符串。
  *
@@ -70,7 +73,8 @@ export function stringifyJson(value: unknown): string {
  * @returns Base64 编码后的字符串
  */
 export function bytesToBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString("base64");
+  const binary = String.fromCharCode(...bytes);
+  return globalThis.btoa(binary);
 }
 
 /**
@@ -80,7 +84,15 @@ export function bytesToBase64(bytes: Uint8Array): string {
  * @returns 解码后的字节数组
  */
 export function base64ToBytes(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "base64"));
+  if (value === "") {
+    return new Uint8Array(0);
+  }
+  const binary = globalThis.atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
 }
 
 /**
@@ -90,7 +102,7 @@ export function base64ToBytes(value: string): Uint8Array {
  * @returns 编码后的字节数组
  */
 export function utf8ToBytes(value: string): Uint8Array {
-  return new Uint8Array(Buffer.from(value, "utf8"));
+  return new Uint8Array(textEncoder.encode(value));
 }
 
 /**
@@ -100,7 +112,7 @@ export function utf8ToBytes(value: string): Uint8Array {
  * @returns UTF-8 格式的字符串
  */
 export function bytesToUtf8(value: Uint8Array): string {
-  return Buffer.from(value).toString("utf8");
+  return textDecoder.decode(value);
 }
 
 /**
@@ -176,7 +188,7 @@ export function mergeAbortSignals(options?: RequestOptions): {
 } {
   const controller = new AbortController();
   const { signal, timeoutMs } = options ?? {};
-  let timeout: NodeJS.Timeout | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
 
   const onAbort = () => {
     controller.abort(abortReason(signal));

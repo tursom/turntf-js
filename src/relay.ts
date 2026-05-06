@@ -9,8 +9,6 @@
  * @module relay
  */
 
-import { randomBytes } from "node:crypto";
-
 import {
   defaultRelayConfig,
   DeliveryMode,
@@ -44,7 +42,9 @@ import {
  * 生成随机的 relay 连接 ID。
  */
 function newRelayID(): string {
-  return randomBytes(16).toString("hex");
+  const b = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(b);
+  return Array.from(b).map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +420,7 @@ export class RelayConnection {
 
   /** @internal */
   handleRemoteError(env: DomainRelayEnvelope): void {
-    const msg = Buffer.from(env.payload).toString("utf8");
+    const msg = new TextDecoder().decode(env.payload);
     this.handleClose(
       new RelayError(RelayErrorCode.Protocol, `remote peer error: ${msg}`)
     );

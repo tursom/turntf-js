@@ -1,5 +1,3 @@
-import WebSocket, { type RawData } from "ws";
-
 import {
   ClientDeliveryKind,
   ClientEnvelope as ProtoClientEnvelope,
@@ -163,7 +161,7 @@ interface ServeResult {
 }
 
 interface Frame {
-  readonly data: RawData;
+  readonly data: ArrayBuffer | Blob | Uint8Array;
   readonly isBinary: boolean;
 }
 
@@ -1475,14 +1473,12 @@ export class Client {
 
   private async dial(): Promise<QueuedWebSocket> {
     const wsUrl = websocketUrl(this.baseUrl, this.realtimeStream);
-    const ws = new WebSocket(wsUrl, {
-      handshakeTimeout: this.requestTimeoutMs
-    });
+    const ws = new globalThis.WebSocket(wsUrl);
+    ws.binaryType = "arraybuffer";
     try {
       await waitForSocketOpen(ws);
       return new QueuedWebSocket(ws, () => this.closed);
     } catch (error) {
-      ws.removeAllListeners();
       try {
         ws.close();
       } catch {
@@ -1815,7 +1811,7 @@ export class Client {
       throw new ProtocolError("invalid protobuf frame");
     }
     try {
-      return ProtoServerEnvelope.fromBinary(rawDataToBytes(frame.data));
+      return ProtoServerEnvelope.fromBinary(await rawDataToBytes(frame.data));
     } catch (error) {
       throw new ProtocolError("invalid protobuf frame");
     }
@@ -1847,32 +1843,35 @@ class QueuedWebSocket {
     const closeDeferred = createDeferred<void>();
     this.closePromise = closeDeferred.promise;
 
-    socket.on("message", (data, isBinary) => {
+    socket.onmessage = (event: MessageEvent) => {
       if (this.closedError != null) {
         return;
       }
-      const frame = { data, isBinary };
+      const frame: Frame = {
+        data: event.data,
+        isBinary: typeof event.data !== "string",
+      };
       const waiter = this.waiters.shift();
       if (waiter == null) {
         this.frames.push(frame);
       } else {
         waiter.resolve(frame);
       }
-    });
+    };
 
-    socket.on("error", (error) => {
-      this.socketError = error;
-    });
+    socket.onerror = () => {
+      this.socketError = new Error("websocket error");
+    };
 
-    socket.on("close", (code, reason) => {
-      const detail = Buffer.from(reason).toString("utf8");
+    socket.onclose = (event: CloseEvent) => {
+      const detail = event.reason || "";
       const cause = this.socketError ?? new Error(detail === ""
-        ? `websocket closed with code ${code}`
-        : `websocket closed with code ${code}: ${detail}`);
+        ? `websocket closed with code ${event.code}`
+        : `websocket closed with code ${event.code}: ${detail}`);
       const error = this.isClientClosed() ? new ClosedError() : new ConnectionError("read", cause);
       this.finish(error);
       closeDeferred.resolve();
-    });
+    };
   }
 
   isOpen(): boolean {
@@ -1896,15 +1895,7 @@ class QueuedWebSocket {
     if (this.socket.readyState !== WebSocket.OPEN) {
       throw new NotConnectedError();
     }
-    await new Promise<void>((resolve, reject) => {
-      this.socket.send(payload, { binary: true }, (error) => {
-        if (error == null) {
-          resolve();
-          return;
-        }
-        reject(error);
-      });
-    });
+    this.socket.send(payload);
   }
 
   async close(): Promise<void> {
@@ -1917,7 +1908,7 @@ class QueuedWebSocket {
     }
     const forceClose = setTimeout(() => {
       if (this.socket.readyState !== WebSocket.CLOSED) {
-        this.socket.terminate();
+        this.socket.close();
       }
     }, 200);
     try {
@@ -1987,41 +1978,41 @@ function waitForSocketOpen(socket: WebSocket): Promise<void> {
     return Promise.resolve();
   }
   return new Promise<void>((resolve, reject) => {
-    const cleanup = () => {
-      socket.off("open", onOpen);
-      socket.off("error", onError);
-      socket.off("close", onClose);
-    };
     const onOpen = () => {
       cleanup();
       resolve();
     };
-    const onError = (error: Error) => {
+    const onError = () => {
       cleanup();
-      reject(error);
+      reject(new Error("websocket connection failed"));
     };
-    const onClose = (code: number, reason: Buffer) => {
+    const onClose = (event: CloseEvent) => {
       cleanup();
-      const detail = reason.toString("utf8");
+      const detail = event.reason || "";
       reject(new Error(detail === ""
-        ? `websocket closed with code ${code}`
-        : `websocket closed with code ${code}: ${detail}`));
+        ? `websocket closed with code ${event.code}`
+        : `websocket closed with code ${event.code}: ${detail}`));
     };
-    socket.once("open", onOpen);
-    socket.once("error", onError);
-    socket.once("close", onClose);
+    const cleanup = () => {
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    socket.addEventListener("open", onOpen, { once: true });
+    socket.addEventListener("error", onError, { once: true });
+    socket.addEventListener("close", onClose, { once: true });
   });
 }
 
-function rawDataToBytes(data: RawData): Uint8Array {
-  if (Array.isArray(data)) {
-    return Buffer.concat(data.map((part) => Buffer.isBuffer(part) ? part : Buffer.from(part)));
-  }
-  if (Buffer.isBuffer(data)) {
-    return new Uint8Array(data);
+function rawDataToBytes(data: ArrayBuffer | Blob | Uint8Array): Uint8Array | Promise<Uint8Array> {
+  if (data instanceof Uint8Array) {
+    return data;
   }
   if (data instanceof ArrayBuffer) {
     return new Uint8Array(data);
+  }
+  if (typeof Blob !== "undefined" && data instanceof Blob) {
+    return data.arrayBuffer().then((buf) => new Uint8Array(buf));
   }
   throw new TypeError("unsupported websocket frame payload");
 }
