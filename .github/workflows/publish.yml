@@ -10,6 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
 
     steps:
       - name: Check out repository
@@ -44,9 +45,7 @@ jobs:
         run: npm run build
 
       - name: Publish package
-        run: npm publish
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --provenance
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
